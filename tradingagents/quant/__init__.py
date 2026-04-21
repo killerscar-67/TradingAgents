@@ -1,13 +1,17 @@
 from .contracts import (
+    DailyLossState,
     EntryEngine,
     EntrySignal,
     ExecutionMode,
     NoSignal,
     OrderIntentContract,
+    PositionSizeContract,
     QuantSignalContract,
     QuantSignalLabel,
     RegimeContract,
     RegimeLabel,
+    RiskGateResult,
+    StopContract,
     TradeRating,
     ValidationResult,
     parse_execution_mode,
@@ -15,21 +19,35 @@ from .contracts import (
     rating_from_text,
 )
 from .engine import run_quant_engine
+from .risk import (
+    check_risk_gates,
+    compute_stops,
+    size_position,
+    update_daily_loss,
+)
 
 __all__ = [
+    "DailyLossState",
     "EntryEngine",
     "EntrySignal",
     "ExecutionMode",
     "NoSignal",
     "OrderIntentContract",
+    "PositionSizeContract",
     "QuantSignalContract",
     "QuantSignalLabel",
     "RegimeContract",
     "RegimeLabel",
+    "RiskGateResult",
+    "StopContract",
     "TradeRating",
     "ValidationResult",
     "parse_execution_mode",
     "rating_from_quant_signal",
     "rating_from_text",
     "run_quant_engine",
+    "check_risk_gates",
+    "compute_stops",
+    "size_position",
+    "update_daily_loss",
 ]

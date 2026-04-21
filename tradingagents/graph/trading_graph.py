@@ -41,14 +41,19 @@ from .reflection import Reflector
 from .signal_processing import SignalProcessor
 from .prefilter import score_tickers_with_quant
 from tradingagents.quant.contracts import (
+    DailyLossState,
+    EntryEngine,
+    EntrySignal,
     ExecutionMode,
     OrderIntentContract,
+    PositionSizeContract,
     QuantSignalContract,
     QuantSignalLabel,
     TradeRating,
     parse_execution_mode,
     rating_from_quant_signal,
 )
+from tradingagents.quant.risk import check_risk_gates, size_position
 
 
 class TradingAgentsGraph:
@@ -329,6 +334,7 @@ class TradingAgentsGraph:
         trade_date: str,
         final_trade_decision_text: str,
         quant_contract: Optional[QuantSignalContract] = None,
+        risk_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build a typed order intent contract for execution and downstream automation.
 
@@ -339,6 +345,9 @@ class TradingAgentsGraph:
             quant_contract: Optional pre-scored QuantSignalContract.  When provided
                 in quant_strict mode the live quant fetch is skipped, ensuring the
                 order intent is derived from the same signal used during prefiltering.
+            risk_context: Optional runtime sizing and exposure inputs. When supplied
+                in quant_strict mode, position sizing and pre-trade risk gates are
+                applied before returning the order intent.
         """
         if self.execution_mode == "quant_strict":
             if quant_contract is None:
@@ -357,6 +366,13 @@ class TradingAgentsGraph:
                     "llm_final_trade_decision": final_trade_decision_text,
                     "quant_signal": quant_contract.to_dict(),
                 },
+            )
+            intent = self._apply_quant_risk_controls(
+                symbol,
+                trade_date,
+                intent,
+                quant_contract,
+                risk_context=risk_context,
             )
             return intent.to_dict()
 
@@ -380,6 +396,128 @@ class TradingAgentsGraph:
             },
         )
         return intent.to_dict()
+
+    def _coerce_entry_signal(self, payload: Any) -> Optional[EntrySignal]:
+        if isinstance(payload, EntrySignal):
+            return payload
+        if not isinstance(payload, dict):
+            return None
+
+        engine_value = str(payload.get("engine", "")).strip().lower()
+        direction = str(payload.get("direction", "")).strip().lower()
+        if engine_value not in {item.value for item in EntryEngine}:
+            return None
+        if direction not in {"long", "short"}:
+            return None
+        try:
+            strength = float(payload.get("strength", 0.0))
+        except (TypeError, ValueError):
+            strength = 0.0
+
+        return EntrySignal(
+            engine=EntryEngine(engine_value),
+            direction=direction,
+            strength=strength,
+            reason=str(payload.get("reason", "")),
+        )
+
+    def _coerce_daily_loss_state(self, payload: Any, trade_date: str) -> DailyLossState:
+        if isinstance(payload, DailyLossState):
+            return payload
+        if isinstance(payload, dict):
+            return DailyLossState(
+                date=str(payload.get("date", trade_date)),
+                net_pnl=float(payload.get("net_pnl", 0.0)),
+                kill_switch=bool(payload.get("kill_switch", False)),
+                trade_count=int(payload.get("trade_count", 0)),
+            )
+        return DailyLossState.new_day(trade_date)
+
+    def _apply_quant_risk_controls(
+        self,
+        symbol: str,
+        trade_date: str,
+        intent: OrderIntentContract,
+        quant_contract: QuantSignalContract,
+        risk_context: Optional[Dict[str, Any]] = None,
+    ) -> OrderIntentContract:
+        context = risk_context or self.config.get("risk_context") or {}
+        if not context or intent.blocked:
+            return intent
+
+        entry_signal = self._coerce_entry_signal(
+            context.get("entry_signal")
+            or (quant_contract.raw.get("entry") if isinstance(quant_contract.raw, dict) else None)
+        )
+
+        metadata = quant_contract.raw.get("metadata", {}) if isinstance(quant_contract.raw, dict) else {}
+        entry_price = context.get("entry_price", metadata.get("close"))
+        atr_15m = context.get("atr_15m")
+        account_equity = context.get("account_equity")
+
+        if entry_signal is None or entry_price is None or atr_15m is None or account_equity is None:
+            return intent
+
+        daily_loss_state = self._coerce_daily_loss_state(context.get("daily_loss_state"), trade_date)
+        try:
+            current_exposure = float(context.get("current_exposure", 0.0))
+            size_contract = size_position(
+                entry_signal,
+                float(entry_price),
+                float(atr_15m),
+                float(account_equity),
+                self.config,
+            )
+            size_contract = PositionSizeContract(
+                symbol=symbol,
+                direction=size_contract.direction,
+                quantity=size_contract.quantity,
+                entry_price=size_contract.entry_price,
+                notional=size_contract.notional,
+                stop_price=size_contract.stop_price,
+                risk_amount=size_contract.risk_amount,
+                method=size_contract.method,
+            )
+            risk_gate = check_risk_gates(
+                size_contract,
+                daily_loss_state,
+                current_exposure,
+                float(account_equity),
+                self.config,
+            )
+        except (TypeError, ValueError) as exc:
+            risk_annotations = dict(intent.annotations)
+            risk_annotations["risk"] = {
+                "applied": False,
+                "error": str(exc),
+            }
+            return OrderIntentContract(
+                symbol=intent.symbol,
+                trade_date=intent.trade_date,
+                rating=intent.rating,
+                source=intent.source,
+                execution_mode=intent.execution_mode,
+                blocked=True,
+                reason=f"Risk sizing failed: {exc}",
+                annotations=risk_annotations,
+            )
+
+        risk_annotations = dict(intent.annotations)
+        risk_annotations["risk"] = {
+            "applied": True,
+            "size_contract": size_contract.to_dict(),
+            "gate": risk_gate.to_dict(),
+        }
+        return OrderIntentContract(
+            symbol=intent.symbol,
+            trade_date=intent.trade_date,
+            rating=intent.rating,
+            source=intent.source,
+            execution_mode=intent.execution_mode,
+            blocked=intent.blocked or not risk_gate.allowed,
+            reason=risk_gate.reason if not risk_gate.allowed else intent.reason,
+            annotations=risk_annotations,
+        )
 
     def rank_tickers_with_quant(
         self,

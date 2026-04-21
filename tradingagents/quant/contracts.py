@@ -190,6 +190,66 @@ class ValidationResult:
         }
 
 
+
+# ---------------------------------------------------------------------------
+# Phase 3: Risk / sizing contracts
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PositionSizeContract:
+    """Deterministic position size computed from account equity and ATR stop."""
+    symbol: str
+    direction: Literal["long", "short"]
+    quantity: float        # number of shares/units to buy/sell
+    entry_price: float     # reference price used for sizing
+    notional: float        # quantity × entry_price
+    stop_price: float      # initial hard stop price
+    risk_amount: float     # dollar risk = quantity × |entry_price - stop_price|
+    method: str            # "fixed_fractional"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class StopContract:
+    """ATR-based stop levels for a single entry."""
+    initial_stop: float          # hard stop price at entry
+    breakeven_trigger: float     # price at which to move stop to entry
+    trailing_distance: float     # ATR-based trailing stop distance (always positive)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RiskGateResult:
+    """Result of pre-trade risk gate checks."""
+    allowed: bool
+    reason: str            # empty string when allowed=True
+    kill_switch: bool      # True when the kill switch is the reason for blocking
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class DailyLossState:
+    """Immutable intraday loss tracker. Reconstruct via update_daily_loss()."""
+    date: str              # ISO "YYYY-MM-DD"
+    net_pnl: float         # running P&L for the day (negative = net loss)
+    kill_switch: bool      # True once kill-switch threshold is breached
+    trade_count: int       # number of completed trades today
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def new_day(cls, date: str) -> "DailyLossState":
+        return cls(date=date, net_pnl=0.0, kill_switch=False, trade_count=0)
+
+
 def parse_execution_mode(value: Optional[str]) -> ExecutionMode:
     normalized = str(value or "llm_assisted").strip().lower()
     if normalized not in {"llm_assisted", "quant_strict"}:

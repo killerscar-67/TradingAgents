@@ -83,6 +83,23 @@ DEFAULT_CONFIG = {
     # Quant engine (Phase 2) — engine dispatch override
     # "auto" uses regime-based dispatch; "breakout" or "mean_reversion" forces engine
     "entry_mode": "auto",
+    # Risk and sizing (Phase 3)
+    # Fixed fractional: risk this fraction of equity per trade
+    "risk_per_trade_pct": 0.01,
+    # ATR multiples for initial stop distance from entry
+    "atr_stop_mult": 2.0,
+    # ATR multiples of profit needed to trigger break-even stop move
+    "breakeven_atr_mult": 1.0,
+    # ATR multiples for trailing stop distance
+    "trailing_atr_mult": 1.5,
+    # Single-position notional cap as fraction of equity
+    "max_position_size_pct": 0.10,
+    # Aggregate exposure cap as fraction of equity
+    "max_exposure_pct": 0.20,
+    # Daily loss cap: block new orders when net_pnl <= -(equity * this)
+    "max_daily_loss_pct": 0.02,
+    # Kill switch: permanently halt orders for the day when breached
+    "kill_switch_daily_loss_pct": 0.03,
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
