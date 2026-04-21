@@ -18,6 +18,16 @@ from .contracts import (
     rating_from_quant_signal,
     rating_from_text,
 )
+from .execution import (
+    BrokerAdapter,
+    ExecutionOrder,
+    FillContract,
+    OrderManager,
+    OrderStatus,
+    PaperBrokerAdapter,
+    PortfolioPosition,
+    PortfolioState,
+)
 from .engine import run_quant_engine
 from .risk import (
     check_risk_gates,
@@ -42,6 +52,14 @@ __all__ = [
     "StopContract",
     "TradeRating",
     "ValidationResult",
+    "BrokerAdapter",
+    "ExecutionOrder",
+    "FillContract",
+    "OrderManager",
+    "OrderStatus",
+    "PaperBrokerAdapter",
+    "PortfolioPosition",
+    "PortfolioState",
     "parse_execution_mode",
     "rating_from_quant_signal",
     "rating_from_text",

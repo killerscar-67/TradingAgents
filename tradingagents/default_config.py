@@ -100,6 +100,11 @@ DEFAULT_CONFIG = {
     "max_daily_loss_pct": 0.02,
     # Kill switch: permanently halt orders for the day when breached
     "kill_switch_daily_loss_pct": 0.03,
+    # Execution guards (Phase 4)
+    # Reject orders larger than this fraction of the latest bar volume
+    "max_order_volume_pct": 0.01,
+    # Reject orders whose expected slippage exceeds this fraction
+    "max_slippage_pct": 0.005,
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {

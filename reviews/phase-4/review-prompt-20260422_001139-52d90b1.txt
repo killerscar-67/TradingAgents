@@ -1,0 +1,1603 @@
+You are the review agent for a multi-agent software delivery workflow.
+All output must be in English.
+
+Project root: /Users/josephwong/TradingAgents
+Execution environment: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python
+Phase: 4
+Reviewer: copilot
+
+Review scope:
+Order lifecycle state machine; idempotency; pre-trade guard ordering; paper slippage fidelity.
+
+Non-goals:
+Do not rework quant signal generation or regime logic semantics.
+
+Rules:
+- Evaluate only based on handoff + patch below.
+- Do not assume unseen code behavior.
+- Prefer minimal corrective changes over broad rewrites.
+- Prioritize interface integrity, deterministic behavior, and no execution leakage from LLM output.
+
+Required output format:
+1. Findings ordered by severity: BLOCKER, HIGH, MEDIUM, LOW.
+2. For each finding include: file path, issue, impact, minimal fix.
+3. Merge decision: APPROVE or CHANGES_REQUIRED.
+4. If CHANGES_REQUIRED, list all required fixes.
+
+Handoff:
+# Phase 4 Handoff - Execution and Portfolio State
+
+Agent: Codex
+Date: 2026-04-22
+
+## What was built
+
+- `tradingagents/quant/execution.py`: deterministic paper execution module.
+    - `BrokerAdapter`: runtime-checkable protocol for broker implementations.
+    - `PaperBrokerAdapter(slippage_pct=0.0, commission_per_order=0.0)`: in-memory paper broker; supports idempotent submit/cancel/fill behavior.
+    - `OrderManager(broker, config=None)`: converts risk-gated `OrderIntentContract` dicts into broker orders and enforces pre-trade guards.
+    - `PortfolioState(cash, positions={}, fills=())`: immutable portfolio state reconciler; `apply_fill(fill)` updates cash/positions and ignores duplicate fills.
+    - `ExecutionOrder`, `FillContract`, `PortfolioPosition`, `OrderStatus`: serializable execution value objects.
+- `tradingagents/quant/__init__.py`: exported Phase 4 broker, order, fill, and portfolio symbols.
+- `tradingagents/default_config.py`: added execution guard thresholds:
+    - `max_order_volume_pct`
+    - `max_slippage_pct`
+- `tradingagents/graph/trading_graph.py`: `build_order_intent(..., risk_context=...)` enriches strict-mode order intents with Phase 3 sizing and risk-gate annotations before they reach `OrderManager`.
+- `tests/test_execution.py`: added Phase 4 coverage for broker adapter contract, guard defaults, paper fill pricing, submit/cancel/fill idempotency, guard ordering, and portfolio reconciliation.
+- `tests/test_execution_contracts.py`: strict-mode order-intent coverage for kill-switch and exposure-cap blocking through `risk_context`.
+
+## Contracts exposed to next phase
+
+- `OrderManager.submit_order_intent(order_intent, market_snapshot, submitted_at="", idempotency_key=None) -> ExecutionOrder`
+    - Consumes a strict-mode order intent with `annotations["risk"]["size_contract"]` and `annotations["risk"]["gate"]`.
+    - Guard order: blocked intent -> risk gate -> liquidity -> slippage -> broker submit.
+- `OrderManager.process_next_bar(order_id, next_bar, timestamp="") -> FillContract`
+    - Delegates to the broker and returns the fill for the next bar.
+- `PaperBrokerAdapter.submit_order(...) -> ExecutionOrder`
+    - Idempotent when `idempotency_key` is supplied.
+- `PaperBrokerAdapter.cancel_order(order_id, reason="cancelled") -> ExecutionOrder`
+    - Idempotent for already cancelled, filled, or rejected orders.
+- `PaperBrokerAdapter.process_next_bar(order_id, next_bar, timestamp="") -> FillContract`
+    - Fills submitted market orders at next-bar open plus configured slippage.
+    - Idempotent: repeated calls for the same order return the original fill and do not duplicate state.
+- `PortfolioState.apply_fill(fill) -> PortfolioState`
+    - Immutable reconciliation from fills; duplicate `fill_id` is ignored.
+
+## Config keys added
+
+- `max_order_volume_pct`: `float`, default `0.01`, no env override. Rejects orders whose quantity exceeds this fraction of latest bar volume.
+- `max_slippage_pct`: `float`, default `0.005`, no env override. Rejects orders whose expected slippage exceeds this threshold.
+
+## Test command
+
+```
+/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
+```
+
+Additional relevant Phase 4 coverage:
+
+```
+/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution tests.test_execution_contracts tests.test_risk -v
+```
+
+## Known limitations / deferred decisions
+
+- `PaperBrokerAdapter` is in-memory only; no persistence or external broker API is wired.
+- Orders are market-style paper orders only. Limit, stop, bracket/OCO, partial fills, and trailing stop management are deferred.
+- Liquidity guard uses latest bar volume and order quantity; it does not model ADV, bid/ask depth, lot sizes, or borrow availability.
+- `PortfolioState` tracks cash, signed quantity, average price, and fills; realized P&L attribution and daily-loss updates from closed trades are deferred.
+- `propagate(...)` does not yet submit to `OrderManager`; the execution layer is explicit so paper/live callers can decide when to submit.
+
+## What the reviewer must focus on
+
+- Verify order state transitions are idempotent for submit, cancel, and fill operations.
+- Verify paper fills use next-bar open plus configured slippage and never duplicate fills on replay.
+- Verify guard ordering is strict and conservative: blocked intent, risk gate, liquidity, then slippage.
+- Verify `PortfolioState.apply_fill()` is deterministic and duplicate-fill safe.
+- Verify no LLM output reaches `OrderManager`; it consumes only typed order intent and risk annotations.
+
+## Fix notes
+
+(none yet)
+
+Patch:
+diff --git a/.gitignore b/.gitignore
+index 9a2904a..d5a3d9f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -156,6 +156,7 @@ venv/
+ ENV/
+ env.bak/
+ venv.bak/
++tradingagent_venv/
+ 
+ # Spyder project settings
+ .spyderproject
+diff --git a/.phase-0-context.txt b/.phase-0-context.txt
+new file mode 100644
+index 0000000..0456dad
+--- /dev/null
++++ b/.phase-0-context.txt
+@@ -0,0 +1,13 @@
++Project root: /Users/josephwong/TradingAgents
++Phase: 0
++
++Execution rules:
++- Use only this Python interpreter: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python
++- Keep changes deterministic and small
++- Produce handoff file docs/handoffs/phase-0.md
++- Run tests before completion: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
++
++Relevant prior handoffs (if any):
++(none)
++
++Current phase plan excerpt:
+diff --git a/.phase-3-context.txt b/.phase-3-context.txt
+new file mode 100644
+index 0000000..6ba1c38
+--- /dev/null
++++ b/.phase-3-context.txt
+@@ -0,0 +1,267 @@
++Project root: /Users/josephwong/TradingAgents
++Phase: 3
++
++Execution rules:
++- Use only this Python interpreter: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python
++- Keep changes deterministic and small
++- Produce handoff file docs/handoffs/phase-3.md
++- Run tests before completion: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
++
++Relevant prior handoffs (if any):
++--- /Users/josephwong/TradingAgents/docs/handoffs/phase-0.md ---
++# Phase 0 Handoff - Execution Contracts
++Agent: Copilot
++Date: 2026-04-21 (revised after review)
++
++## What was built
++- `tradingagents/quant/contracts.py`: added deterministic typed contracts and helpers for execution mode parsing, quant signal normalization, and order intent construction. Added `QuantSignalContract.from_dict()` for round-trip reconstruction from stored dicts. `from_raw` sets `score = float('-inf')` when `error` is present.
++- `tradingagents/quant/__init__.py`: exported contract symbols for import stability.
++- `tradingagents/default_config.py`: added `execution_mode` config key and safe integer env parsing for quant cache TTL.
++- `tradingagents/graph/trading_graph.py`: `propagate` now returns `(final_state, order_intent_dict)` where `order_intent_dict` includes `rating` and `blocked`. `build_order_intent` accepts an optional `quant_contract` parameter; when provided in `quant_strict` mode the live fetch is skipped, preserving determinism for universe flows. `propagate_prefiltered_universe` reconstructs the prefilter contract via `from_dict` and passes it through, eliminating duplicate quant API calls.
++- `tradingagents/graph/signal_processing.py`: strict mode now avoids LLM calls and uses deterministic rating extraction.
++- `tradingagents/graph/prefilter.py`: quant ranking now includes normalized `QuantSignalContract` payload in each scored item.
++- `cli/main.py`: added `--execution-mode` option with `parse_execution_mode()` validation and warning on unknown values. `run_prefiltered_universe_analysis` now delegates to `graph.propagate_prefiltered_universe` (single code path). Summary table includes a **Blocked** column so errored signals are never silently shown as actionable decisions.
++- `.vscode/settings.json`: fixed invalid JSON and kept single interpreter object.
++- `requirements.txt`: editable install entry (`.`) present.
++- `pyproject.toml`: `vectorbt` moved to `[project.optional-dependencies]` (`vectorbt` extras group); the `try/except` guard in `quant_tools.py` is now the correct defensive pattern for optional installs.
++- `tests/test_execution_contracts.py`: added unit tests for contracts and strict-mode signal processing behavior.
++
++## Contracts exposed to next phase
++- `QuantSignalContract` (`tradingagents/quant/contracts.py`): deterministic normalized quant signal schema. Use `from_raw()` to parse tool output; use `from_dict()` to reconstruct from stored payload.
++- `OrderIntentContract` (`tradingagents/quant/contracts.py`): typed execution intent schema with `source`/`execution_mode`/`blocked`/`reason`/`annotations`.
++- `ExecutionMode` (`tradingagents/quant/contracts.py`): `"llm_assisted" | "quant_strict"` mode contract.
++- `TradeRating` (`tradingagents/quant/contracts.py`): enum of `{BUY, OVERWEIGHT, HOLD, UNDERWEIGHT, SELL}`.
++- `TradingAgentsGraph.propagate(symbol, trade_date, quant_contract=None)` returns `(final_state, order_intent_dict)`.
++- `TradingAgentsGraph.build_order_intent(symbol, trade_date, text, quant_contract=None)` — canonical execution intent builder.
++
++## Config keys added
++- `execution_mode`: `str`, default `llm_assisted`, env override `TRADINGAGENTS_EXECUTION_MODE`.
++- `quant_prefilter_cache_ttl_days`: now read with safe parsing from env `TRADINGAGENTS_QUANT_CACHE_TTL_DAYS`.
++
++## Test command
++`/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v`
++
++Expected: 15 tests, all OK.
++
++## Known limitations / deferred decisions
++- Strict mode currently derives executable intent from `get_quant_signals` per symbol/date; no broker adapter wiring yet (planned for later phases).
++- `propagate` still executes the LLM graph for annotations/reporting; strict mode only changes order-intent derivation path.
++- `OrderIntentContract` is consumed as a dict in CLI/graph compatibility paths; dataclass-native handoff to broker layer is deferred to Phase 4.
++- DashScope aliasing has no log warning when env var substitution fires (LOW severity, no execution impact).
++
++## What the reviewer must focus on
++- Verify no LLM-dependent extraction is required to get strict-mode order intent.
++- Verify `execution_mode=quant_strict` is deterministic: prefilter contract is reused by `build_order_intent`, no second live fetch.
++- Verify `propagate` return value carries `blocked` and callers surface it.
++- Verify typed contracts are the stable interface for next phases and no duplicate contract schema exists elsewhere.
++- Verify CLI routes through `graph.propagate_prefiltered_universe` (not a separate direct call to `score_tickers_with_quant`).
++
++## Fix notes
++- 2026-04-21T16:21:34+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md
++- 2026-04-21T15:47:44+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md
++
++--- /Users/josephwong/TradingAgents/docs/handoffs/phase-1.md ---
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Freshness is controlled by bypassing cache reads **and writes** for live/current date ranges (`_is_live_end_date(end)` guard) and by `refresh_cache=True`.
++- `_align_session` regular-session open mask uses `hour > 9 or (hour == 9 and minute >= 30)`. yfinance 1h bars are labelled at the top of the hour; the bar covering 09:00–10:00 ET has `hour=9, minute=0` and is excluded. **Phase 2 callers must not rely on 4h candles capturing the 09:30 open** — the first included 1h bar is 10:00 ET.
++- 4h UTC-midnight bucket alignment yields at most 1 usable NYSE-session candle per day; the interval is best suited for crypto (24h) sessions.
++- `_is_live_end_date` compares naive date objects; `end` is treated as a UTC calendar date. Callers in UTC-ahead timezones passing a local-time date string may see unexpected live/historical classification.
++
++## What the reviewer must focus on
++
++- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
++- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
++- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
++- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
++- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
++- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
++
++## Fix notes
++
++**Round 1** (review-20260421_164340): Partial 4h boundary candles — added `counts >= _MIN_BARS_PER_4H_CANDLE` filter in `_resample_1h_to_4h`. `intraday_default_session` config key unwired — added `resolved_session = session or config.get(...)` in `interface.get_intraday_bars`. Added DST spring-forward test.
++
++**Round 2** (review-20260421_165039): `intraday_cache_dir` config key dead — added `resolved_cache_dir = cache_dir or config.get(...)` in interface. `intraday_refresh_cache` unused — added `resolved_refresh_cache = refresh_cache or config.get(...)` in interface.
++
++**Round 3** (review-20260421_165646): Stale live-date cache write — added `_is_live_end_date(end)` guard on both cache read and write paths. Added `test_live_end_date_fetch_is_not_persisted_to_cache` regression test.
++
++**Round 4** (review-20260421_170058): DST fall-back coverage — added `test_regular_session_around_dst_fallback` (2026-11-02). Verified `.vscode/settings.json` is single-object JSON. Verified `requirements.txt` still contains `.`.
++
++**Round 5** (review-20260421_171123): TOCTOU race — `_is_live_end_date(end)` was called twice without storing the result; captured once into `is_live` local variable used for both the read-guard and the write-guard.
++
++--- /Users/josephwong/TradingAgents/docs/handoffs/phase-2.md ---
++# Phase 2 Handoff — Deterministic Quant Engine
++
++Agent: Claude Code
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/quant/regime.py`: Regime classifier. Key public function:
++    - `classify(bars: pd.DataFrame, config: dict | None) -> RegimeContract`
++    - Computes ADX (Wilder smoothing) + ATR from 4h bars.
++    - Labels regime as `trending` (ADX ≥ 25), `ranging` (ADX ≤ 20), or `consolidation` (low ADX + tight Bollinger width).
++    - Tradability gate: ATR% ≥ `min_atr_pct` AND average volume ≥ `min_volume`.
++    - HTF directional bias: `bullish` / `bearish` / `neutral` relative to SMA(20).
++    - Helper exports: `compute_atr()`, `compute_adx()` — reusable by Phase 3.
++
++- `tradingagents/quant/entry.py`: Dual entry engines. Key public functions:
++    - `run_breakout(bars, config) -> EntrySignal | NoSignal`: N-bar channel (default 20) breakout with volume confirmation (factor 1.5×).
++    - `run_mean_reversion(bars, config) -> EntrySignal | NoSignal`: Wilder RSI(14) extreme + price stretched from SMA by `mr_stretch_std` std devs (default 2.0) or `mr_min_stretch_pct` (default 1%), whichever is larger. Both conditions must hold simultaneously.
++    - `run_entry(bars, regime, config) -> EntrySignal | NoSignal`: Regime-aware dispatcher. TRENDING → breakout; RANGING → mean reversion; CONSOLIDATION → NoSignal. Applies HTF directional filter.
++    - `_direction_allowed(signal, htf_bias) -> bool`: exported helper for engine.py forced-mode paths.
++
++- `tradingagents/quant/validation.py`: Three independently-togglable validation filters:
++    - `validate(bars, entry_signal, config) -> ValidationResult`
++    - **momentum_acceleration** (`validation_momentum`): MACD histogram must be increasing for long, decreasing for short.
++    - **squeeze_gate** (`validation_squeeze`): rejects when Bollinger Bands are fully inside Keltner Channels (TTM Squeeze ON).
++    - **sr_proximity** (`validation_sr_proximity`): rejects if price within `sr_proximity_pct` (default 0.5%) of a recent swing high/low (N-bar local extrema scan).
++
++- `tradingagents/quant/engine.py`: Top-level orchestrator:
++    - `run_quant_engine(symbol, trade_date, bars_15m, bars_4h, config) -> QuantSignalContract`
++    - Pipeline: `regime(bars_4h)` → `entry(bars_15m, regime)` → `validate(bars_15m, entry)` → `QuantSignalContract`.
++    - Exceptions in any stage are caught and returned as an error `QuantSignalContract` (never propagated).
++    - `config["entry_mode"]`: `"auto"` (default, regime-based), `"breakout"`, or `"mean_reversion"` to force engine.
++    - Score: `entry.strength * (filters_passed / filters_total)`, signed by direction. HOLD → score=0.
++
++- `tradingagents/quant/contracts.py`: Added Phase 2 contract types:
++    - `RegimeLabel(str, Enum)`: `trending | ranging | consolidation`
++    - `EntryEngine(str, Enum)`: `breakout | mean_reversion`
++    - `RegimeContract(frozen dataclass)`: `label, tradable, adx, atr, atr_pct, htf_bias`
++    - `EntrySignal(frozen dataclass)`: `engine, direction, strength, reason`
++    - `NoSignal(frozen dataclass)`: `reason` — explicit typed sentinel (never `None`)
++    - `ValidationResult(frozen dataclass)`: `passed, filters_passed, filters_total, reasons: Tuple[str, ...]`
++    - All have `.to_dict()` methods.
++
++- `tradingagents/quant/__init__.py`: Exports all new contract types and `run_quant_engine`.
++
++- `tradingagents/default_config.py`: Added 30 new config keys for regime, entry, and validation parameters (all with documented defaults). Key toggles: `validation_momentum`, `validation_squeeze`, `validation_sr_proximity`. Entry dispatch: `entry_mode`.
++
++- `tests/test_quant_engine.py`: 49 new tests covering regime, breakout, mean reversion, directional filter, all three validation filters, engine orchestration, error isolation, and determinism.
++
++## Contracts exposed to next phase
++
++- `run_quant_engine(symbol, trade_date, bars_15m, bars_4h, config) -> QuantSignalContract`: lives in `tradingagents.quant.engine`. Phase 3 (risk + sizing) should call this to obtain a signal before applying position sizing and stop logic.
++- `RegimeContract` (`tradingagents.quant.contracts`): carries `atr`, `atr_pct`, and `htf_bias` — Phase 3 can use ATR for stop-distance calculation directly from the regime output.
++- `EntrySignal` (`tradingagents.quant.contracts`): carries `direction` and `strength` — Phase 3 uses direction to determine long/short and can use strength to weight sizing.
++- `compute_atr(bars, period) -> pd.Series` and `compute_adx(bars, period) -> pd.DataFrame` from `tradingagents.quant.regime` — reusable for Phase 3 ATR-based stop calculations.
++- `NoSignal` (`tradingagents.quant.contracts`): typed sentinel, never `None`. Phase 3 must check `isinstance(entry, NoSignal)` before sizing.
++
++## Config keys added
++
++All keys live in `DEFAULT_CONFIG` in `tradingagents/default_config.py`. No env overrides (programmatic-only).
++
++**Regime:**
++- `adx_period`: int, default 14
++- `atr_period`: int, default 14
++- `bb_period`: int, default 20
++- `adx_trending_threshold`: float, default 25.0
++- `adx_ranging_threshold`: float, default 20.0
++- `min_atr_pct`: float, default 0.001
++- `min_volume`: float, default 100_000
++- `htf_sma_period`: int, default 20
++- `htf_bias_neutral_pct`: float, default 0.005
++
++**Breakout entry:**
++- `breakout_lookback`: int, default 20
++- `breakout_volume_factor`: float, default 1.5
++
++**Mean reversion entry:**
++- `rsi_period`: int, default 14
++- `rsi_oversold`: float, default 30.0
++- `rsi_overbought`: float, default 70.0
++- `mr_sma_period`: int, default 20
++- `mr_stretch_std`: float, default 2.0
++- `mr_min_stretch_pct`: float, default 0.01
++
++**Validation filters:**
++- `validation_momentum`: bool, default True
++- `validation_squeeze`: bool, default True
++- `validation_sr_proximity`: bool, default True
++- `macd_fast`: int, default 12
++- `macd_slow`: int, default 26
++- `macd_signal_period`: int, default 9
++- `bb_std`: float, default 2.0
++- `kc_period`: int, default 20
++- `kc_atr_factor`: float, default 1.5
++- `kc_atr_period`: int, default 14
++- `sr_lookback`: int, default 50
++- `sr_swing_width`: int, default 5
++- `sr_proximity_pct`: float, default 0.005
++
++**Engine dispatch:**
++- `entry_mode`: str, default `"auto"` (values: `"auto"`, `"breakout"`, `"mean_reversion"`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts tests.test_quant_engine -v
++```
++
++Expected: 98 tests, all OK.
++
++## Known limitations / deferred decisions
++
++- **4h bars for entry**: `run_quant_engine` takes separate `bars_15m` and `bars_4h`; the caller must fetch both and pass them. No intraday fetch is embedded in the engine (intentional: keeps engine pure/testable).
++- **MR stretch threshold**: Default `mr_stretch_std=2.0` requires a sharp price move relative to SMA volatility. For linearly trending data the maximum achievable deviation is ~1.73 std (geometric property of linear series). Callers doing live/backtesting may need `mr_stretch_std=1.5` for MR signals in gradual-trend regimes.
++- **SR proximity swing detection**: Uses simple local-extrema scan (`sr_swing_width` half-window). Overlapping SR levels are not clustered; dense SR zones may produce many redundant levels.
++- **No integration with Phase 1 intraday fetch**: `run_quant_engine` receives pre-fetched bars. The wiring of `get_intraday_bars` → `run_quant_engine` is left to the Phase 4 execution layer or a thin coordinator function.
++- **Volume column is optional**: If bars have no `Volume` column, the volume gate (breakout) and tradability filter pass automatically.
++- **ATR-based stop calculation**: Phase 3 should call `regime_mod.compute_atr(bars_15m, config["atr_period"])` directly on 15m bars for stop distances — the `RegimeContract.atr` field is computed on 4h bars and is too coarse for intraday stops.
++
++## What the reviewer must focus on
++
++- **Determinism**: Verify same `bars_15m` and `bars_4h` DataFrames always produce identical `QuantSignalContract` (no mutable state, no datetime.now calls in engine path).
++- **No hidden mutable state**: Confirm `regime.py`, `entry.py`, `validation.py` have no module-level mutable variables.
++- **Signal logic matches spec**: Verify regime→engine dispatch matches plan (TRENDING=breakout, RANGING=mean_reversion, CONSOLIDATION=NoSignal).
++- **Module boundaries**: Confirm `engine.py` does not import from `validation.py` internals (only public `validate()`), and `entry.py` does not import `validation.py`.
++- **`_direction_allowed` visibility**: This helper is used by `engine.py` for forced-mode paths; verify it behaves correctly for all three bias values.
++- **Error isolation**: Verify that an exception in `regime.classify` or `entry.run_entry` returns an error `QuantSignalContract` without propagating.
++
++
++## Fix notes
++
++
++Current phase plan excerpt:
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+new file mode 100644
+index 0000000..eadc45a
+--- /dev/null
++++ b/.vscode/settings.json
+@@ -0,0 +1,5 @@
++{
++    "python.defaultInterpreterPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
++    "python.pythonPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
++    "python-envs.defaultEnvManager": "ms-python.python:venv"
++}
+\ No newline at end of file
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..6c5db7b
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,41 @@
++# Repository Guidelines
++
++## Project Structure & Module Organization
++
++This is a Python package for the TradingAgents multi-agent trading framework. Core application code lives in `tradingagents/`: agent roles are under `tradingagents/agents/`, graph orchestration under `tradingagents/graph/`, data providers under `tradingagents/dataflows/`, LLM provider adapters under `tradingagents/llm_clients/`, and quant contracts/tools under `tradingagents/quant/`. The Typer-based command-line app is in `cli/`, with static CLI text in `cli/static/`. Tests are in `tests/`. Documentation and phase handoffs are in `docs/`, review artifacts in `reviews/`, images in `assets/`, and automation scripts in `scripts/`.
++
++## Build, Test, and Development Commands
++
++Use the project virtual environment when present:
++
++```bash
++source tradingagent_venv/bin/activate
++pip install -e .
++python -m cli.main
++tradingagents
++```
++
++`pip install -e .` installs the package in editable mode. `python -m cli.main` runs the CLI from source; `tradingagents` runs the installed console script. Run tests with:
++
++```bash
++python -m unittest discover tests -v
++python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
++```
++
++For containerized usage, run `docker compose run --rm tradingagents` after creating an `.env` file with required API keys.
++
++## Coding Style & Naming Conventions
++
++Target Python 3.10+ as defined in `pyproject.toml`. Follow existing Python style: four-space indentation, snake_case functions and modules, PascalCase classes, and uppercase constants. Keep provider-specific logic in `tradingagents/llm_clients/`, market-data logic in `tradingagents/dataflows/`, and shared contracts in `tradingagents/quant/` or `tradingagents/agents/utils/`. Avoid broad refactors when making feature or test changes.
++
++## Testing Guidelines
++
++Tests use the standard `unittest` runner. Name test files `tests/test_*.py` and keep test methods descriptive, for example `test_rejects_invalid_model_config`. Prefer deterministic tests with mocked or local data; do not require live API keys for routine validation. Add focused coverage for changes that affect graph flow, execution contracts, quant filtering, model validation, or data parsing.
++
++## Commit & Pull Request Guidelines
++
++Recent history uses concise subjects, often Conventional Commit prefixes such as `feat:`, `fix:`, and `refactor:`. Keep commits scoped and imperative, for example `fix: normalize memory scores safely`. Pull requests should include a summary, validation commands run, linked issues when applicable, and screenshots only for CLI or visual asset changes. For phase-based work, update `docs/handoffs/phase-<N>.md` and run the relevant `scripts/review.sh <N> [base-ref]` workflow when requested.
++
++## Security & Configuration Tips
++
++Do not commit API keys, `.env` files, cache directories, or generated logs. Configure providers with environment variables such as `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, and `ALPHA_VANTAGE_API_KEY`. Treat all trading output as research tooling, not financial advice.
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000..9fb567b
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,97 @@
++# CLAUDE.md
++
++This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
++
++## Commands
++
++```bash
++# Install dependencies
++pip install .
++# or with uv
++uv pip install .
++
++# Run the CLI
++tradingagents
++python -m cli.main
++
++# Run all tests
++tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
++
++# Run a single test file
++tradingagent_venv/bin/python -m unittest tests.test_execution_contracts -v
++
++# Run a single test case
++tradingagent_venv/bin/python -m unittest tests.test_execution_contracts.ExecutionContractTests.test_quant_signal_contract_parses_payload -v
++
++# Programmatic usage (no CLI)
++python main.py
++```
++
++**Always use `tradingagent_venv/bin/python`** as the canonical interpreter for this project.
++
++## Architecture
++
++### Execution Flow
++
++1. **Entry**: `TradingAgentsGraph` (`tradingagents/graph/trading_graph.py`) orchestrates everything. Call `ta.propagate(ticker, date)` to run a full analysis cycle.
++2. **Prefiltering**: Before analysis, `score_tickers_with_quant()` (`graph/prefilter.py`) runs quant signals on candidate tickers and ranks them. Results are cached by SHA-256 hash of params in `~/.tradingagents/cache/`.
++3. **Graph execution**: LangGraph drives agent state through `Propagator` (state init), analyst agents, researcher debate, trader, risk management, and portfolio manager in sequence.
++4. **Signal processing**: `SignalProcessor` (`graph/signal_processing.py`) extracts a `TradeRating` (BUY/OVERWEIGHT/HOLD/UNDERWEIGHT/SELL) from agent output. In `quant_strict` mode it uses deterministic regex; in `llm_assisted` mode it calls the quick LLM.
++5. **Reflection**: `ta.reflect_and_remember(position_returns)` triggers post-trade memory updates.
++
++### Two Execution Modes
++
++Controlled by `config["execution_mode"]` or env `TRADINGAGENTS_EXECUTION_MODE`:
++
++- **`llm_assisted`** (default): LLM extracts the final trade rating from narrative output.
++- **`quant_strict`**: Deterministic path — `QuantSignalContract` drives `OrderIntentContract`, no LLM involved in the decision. Avoids non-determinism for backtesting.
++
++### Agent Teams
++
++- **Analyst Team** (`tradingagents/agents/analysts/`): market, social/sentiment, news, fundamentals — each fetches data and writes a report into `AgentState`.
++- **Researcher Team** (`agents/researchers/`): Bull and Bear researchers debate the analyst reports; Research Manager adjudicates.
++- **Trader** (`agents/trader/`): synthesizes reports into a trading proposal.
++- **Risk Management** (`agents/risk_mgmt/`): aggressive/neutral/conservative analysts debate; produces risk assessment.
++- **Portfolio Manager** (`agents/managers/`): final approve/reject decision.
++
++### Key Abstractions
++
++- **`AgentState`** (`agents/utils/agent_states.py`): LangGraph state dict carrying all reports and debate histories across the graph.
++- **`QuantSignalContract` / `OrderIntentContract`** (`tradingagents/quant/contracts.py`): typed dataclasses enforcing quant signal format. Use `QuantSignalContract.from_raw()` to parse LLM/tool output.
++- **`create_llm_client(provider, model, ...)`** (`llm_clients/factory.py`): returns a `BaseLLMClient`. Providers: `openai`, `anthropic`, `google`, `azure`, `xai`, `deepseek`, `qwen`, `glm`, `ollama`, `openrouter`. OpenAI-compatible providers all go through `OpenAIClient`.
++- **Data vendors** (`tradingagents/dataflows/`): `yfinance` (default, no key needed) or `alpha_vantage`. Configured per-category in `config["data_vendors"]` with optional tool-level overrides in `config["tool_vendors"]`.
++
++### Configuration
++
++`DEFAULT_CONFIG` (`tradingagents/default_config.py`) is the single source of truth. All paths default under `~/.tradingagents/` (cache and logs). Override by passing a modified copy as `config=` to `TradingAgentsGraph`.
++
++Key config fields:
++- `llm_provider`, `deep_think_llm`, `quick_think_llm` — model selection
++- `execution_mode` — `"llm_assisted"` or `"quant_strict"`
++- `max_debate_rounds`, `max_risk_discuss_rounds` — agent debate depth
++- `quant_prefilter_cache_ttl_days`, `quant_prefilter_refresh_cache` — cache controls
++- `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` — Phase 1 intraday data
++- `entry_mode` — `"auto"` (regime-driven), `"breakout"`, or `"mean_reversion"` to force engine
++- `validation_momentum/squeeze/sr_proximity` — toggle individual Phase 2 validation filters
++- `output_language` — language for analyst reports (internal debate always English)
++
++### Phase-based Development
++
++The repo follows a phased implementation plan (`plan-quantStrictDaytradeArchitecture.prompt.md`). Use `scripts/run_phase.sh <0-6>` to run a phase with the canonical venv. Each completed phase produces a handoff doc in `docs/handoffs/phase-N.md`.
++
++### Review Fix Notes Protocol
++
++After applying fixes requested by a review, always record a separate fix-notes artifact and link it from the phase handoff:
++
++```bash
++scripts/add_fix_notes.sh <phase-number> <review-file> [title]
++```
++
++Examples:
++
++```bash
++scripts/add_fix_notes.sh 0 reviews/phase-0-review.md "Applied review-directed fixes"
++scripts/add_fix_notes.sh 1 reviews/phase-1/review-YYYYMMDD_HHMMSS-<sha>.md "Re-review fixes"
++```
++
++This command writes `docs/handoffs/history/phase-N/fix-notes-*.md` and updates `docs/handoffs/phase-N.md` under `## Fix notes` with a timestamped link.
+diff --git a/cli/main.py b/cli/main.py
+index 33d110f..35ebe7f 100644
+--- a/cli/main.py
++++ b/cli/main.py
+@@ -1,5 +1,6 @@
+ from typing import Optional
+ import datetime
++import os
+ import typer
+ from pathlib import Path
+ from functools import wraps
+@@ -9,6 +10,15 @@ from dotenv import load_dotenv
+ # Load environment variables
+ load_dotenv()
+ load_dotenv(".env.enterprise", override=False)
++
++# If user supplied a DashScope key in their .env, make it available as
++# OPENAI_API_KEY so OpenAI-compatible clients (langchain/openai) work
++# when code expects OPENAI_API_KEY. Also accept the common misspelling
++# `DASHCOPE_API_KEY` as a fallback.
++if not os.environ.get("OPENAI_API_KEY"):
++    ds_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("DASHCOPE_API_KEY")
++    if ds_key:
++        os.environ["OPENAI_API_KEY"] = ds_key
+ from rich.panel import Panel
+ from rich.spinner import Spinner
+ from rich.live import Live
+@@ -26,6 +36,7 @@ from rich.rule import Rule
+ 
+ from tradingagents.graph.trading_graph import TradingAgentsGraph
+ from tradingagents.default_config import DEFAULT_CONFIG
++from tradingagents.quant.contracts import parse_execution_mode
+ from cli.models import AnalystType
+ from cli.utils import *
+ from cli.announcements import fetch_announcements, display_announcements
+@@ -503,11 +514,22 @@ def get_user_selections():
+     console.print(
+         create_question_box(
+             "Step 1: Ticker Symbol",
+-            "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: SPY, CNC.TO, 7203.T, 0700.HK)",
++            "Enter a ticker or a comma-separated ticker universe (examples: SPY or SPY,QQQ,TSLA)",
+             "SPY",
+         )
+     )
+     selected_ticker = get_ticker()
++    universe = parse_ticker_universe(selected_ticker)
++
++    top_n = 1
++    if len(universe) > 1:
++        console.print(
++            create_question_box(
++                "Step 1b: Quant Prefilter",
++                "How many top-ranked tickers should proceed to the LLM graph?"
++            )
++        )
++        top_n = get_top_n(default=min(5, len(universe)), max_value=len(universe))
+ 
+     # Step 2: Analysis date
+     default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+@@ -598,6 +620,8 @@ def get_user_selections():
+ 
+     return {
+         "ticker": selected_ticker,
++        "tickers": universe,
++        "top_n": top_n,
+         "analysis_date": analysis_date,
+         "analysts": selected_analysts,
+         "research_depth": selected_research_depth,
+@@ -617,6 +641,116 @@ def get_ticker():
+     return typer.prompt("", default="SPY")
+ 
+ 
++def parse_ticker_universe(raw: str):
++    """Parse comma-separated tickers and normalize while preserving order."""
++    tickers = []
++    seen = set()
++    for token in raw.split(","):
++        symbol = token.strip().upper()
++        if symbol and symbol not in seen:
++            tickers.append(symbol)
++            seen.add(symbol)
++    return tickers
++
++
++def get_top_n(default: int, max_value: int) -> int:
++    """Prompt for top-N value constrained by universe size."""
++    while True:
++        value = typer.prompt("", default=default)
++        try:
++            top_n = int(value)
++            if top_n < 1:
++                console.print("[red]Error: top-N must be at least 1[/red]")
++                continue
++            if top_n > max_value:
++                console.print(f"[red]Error: top-N cannot exceed universe size ({max_value})[/red]")
++                continue
++            return top_n
++        except ValueError:
++            console.print("[red]Error: Please enter an integer value[/red]")
++
++
++def run_prefiltered_universe_analysis(selections, graph):
++    """Quant-rank the universe and run the LLM graph only for top-N tickers."""
++    tickers = selections["tickers"]
++    top_n = selections["top_n"]
++    analysis_date = selections["analysis_date"]
++
++    console.print(
++        f"\n[cyan]Running quant prefilter for {len(tickers)} tickers and selecting top {top_n}...[/cyan]"
++    )
++
++    result = graph.propagate_prefiltered_universe(
++        tickers=tickers,
++        trade_date=analysis_date,
++        top_n=top_n,
++        cache_ttl_days=selections.get("quant_cache_ttl_days"),
++        refresh_cache=selections.get("refresh_quant_cache", False),
++    )
++    prefilter = result["prefilter"]
++    analysis = result["analysis"]
++    selected = prefilter["selected"]
++
++    if not selected:
++        console.print("[red]No tickers qualified in quant prefilter. Nothing to analyze.[/red]")
++        return
++
++    rank_table = Table(title="Quant Prefilter Ranking", box=box.SIMPLE_HEAVY)
++    rank_table.add_column("Ticker", style="cyan")
++    rank_table.add_column("Score", justify="right")
++    rank_table.add_column("Signal", justify="center")
++    rank_table.add_column("Selected", justify="center")
++
++    selected_symbols = {item["symbol"] for item in selected}
++    cache_dir = str(Path(graph.config["data_cache_dir"]) / "quant_prefilter")
++    cache_hits = sum(1 for item in prefilter["ranked"] if item.get("cache_hit"))
++    console.print(
++        f"[dim]Quant cache hits: {cache_hits}/{len(prefilter['ranked'])} (cache: {cache_dir})[/dim]"
++    )
++    for item in prefilter["ranked"]:
++        rank_table.add_row(
++            item["symbol"],
++            f"{item['score']:.2f}" if item["score"] != float("-inf") else "-",
++            str(item.get("signal", "unknown")).upper(),
++            "YES" if item["symbol"] in selected_symbols else "NO",
++        )
++
++    console.print(rank_table)
++
++    summary_table = Table(title="LLM Graph Decisions (Top-N)", box=box.SIMPLE_HEAVY)
++    summary_table.add_column("Ticker", style="cyan")
++    summary_table.add_column("Quant Score", justify="right")
++    summary_table.add_column("Quant Signal", justify="center")
++    summary_table.add_column("Decision", justify="center")
++    summary_table.add_column("Blocked", justify="center")
++
++    for item in selected:
++        symbol = item["symbol"]
++        sym_result = analysis.get(symbol, {})
++        order_intent = sym_result.get("order_intent", {})
++        rating = order_intent.get("rating", "UNKNOWN")
++        blocked = order_intent.get("blocked", False)
++        blocked_display = "[red]YES[/red]" if blocked else "[green]NO[/green]"
++        rating_display = f"[dim]{rating}[/dim]" if blocked else str(rating).upper()
++
++        summary_table.add_row(
++            symbol,
++            f"{item['score']:.2f}",
++            str(item.get("signal", "unknown")).upper(),
++            rating_display,
++            blocked_display,
++        )
++
++        final_state = sym_result.get("final_state")
++        if final_state:
++            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
++            save_path = Path.cwd() / "reports" / f"{symbol}_{timestamp}"
++            save_report_to_disk(final_state, symbol, save_path)
++
++    console.print("\n")
++    console.print(summary_table)
++
++
+ def get_analysis_date():
+     """Get the analysis date from user input."""
+     while True:
+@@ -926,7 +1060,11 @@ def format_tool_args(args, max_length=80) -> str:
+         return result[:max_length - 3] + "..."
+     return result
+ 
+-def run_analysis():
++def run_analysis(
++    refresh_quant_cache: bool = False,
++    quant_cache_ttl_days: int = 1,
++    execution_mode: str = "llm_assisted",
++):
+     # First get all user selections
+     selections = get_user_selections()
+ 
+@@ -943,6 +1081,17 @@ def run_analysis():
+     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
+     config["anthropic_effort"] = selections.get("anthropic_effort")
+     config["output_language"] = selections.get("output_language", "English")
++    normalized_mode = parse_execution_mode(execution_mode)
++    if normalized_mode != execution_mode.strip().lower():
++        console.print(
++            f"[yellow]Warning: unknown execution_mode '{execution_mode}', defaulting to '{normalized_mode}'[/yellow]"
++        )
++    config["execution_mode"] = normalized_mode
++    config["quant_prefilter_refresh_cache"] = refresh_quant_cache
++    config["quant_prefilter_cache_ttl_days"] = quant_cache_ttl_days
++
++    selections["refresh_quant_cache"] = refresh_quant_cache
++    selections["quant_cache_ttl_days"] = quant_cache_ttl_days
+ 
+     # Create stats callback handler for tracking LLM/tool calls
+     stats_handler = StatsCallbackHandler()
+@@ -959,6 +1108,11 @@ def run_analysis():
+         callbacks=[stats_handler],
+     )
+ 
++    # Universe mode: quant prefilter first, then run LLM graph for top-N only.
++    if len(selections["tickers"]) > 1:
++        run_prefiltered_universe_analysis(selections, graph)
++        return
++
+     # Initialize message buffer with selected analysts
+     message_buffer.init_for_analysis(selected_analyst_keys)
+ 
+@@ -1153,7 +1307,11 @@ def run_analysis():
+ 
+         # Get final state and decision
+         final_state = trace[-1]
+-        decision = graph.process_signal(final_state["final_trade_decision"])
++        decision = graph.build_order_intent(
++            selections["ticker"],
++            selections["analysis_date"],
++            final_state["final_trade_decision"],
++        )["rating"]
+ 
+         # Update all agent statuses to completed
+         for agent in message_buffer.agent_status:
+@@ -1197,8 +1355,28 @@ def run_analysis():
+ 
+ 
+ @app.command()
+-def analyze():
+-    run_analysis()
++def analyze(
++    execution_mode: str = typer.Option(
++        "llm_assisted",
++        "--execution-mode",
++        help="Execution mode: llm_assisted or quant_strict.",
++    ),
++    refresh_quant_cache: bool = typer.Option(
++        False,
++        "--refresh-quant-cache",
++        help="Force recompute quant prefilter signals and bypass cache.",
++    ),
++    quant_cache_ttl_days: int = typer.Option(
++        1,
++        "--quant-cache-ttl-days",
++        help="Quant prefilter cache TTL in days (0 = only entries saved now, negative disables age expiry).",
++    ),
++):
++    run_analysis(
++        execution_mode=execution_mode,
++        refresh_quant_cache=refresh_quant_cache,
++        quant_cache_ttl_days=quant_cache_ttl_days,
++    )
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md b/docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md
+new file mode 100644
+index 0000000..a60eec9
+--- /dev/null
++++ b/docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md
+@@ -0,0 +1,207 @@
++# Phase 0 Fix Notes
++
++- Title: Applied review-directed fixes
++- Date: 2026-04-21T15:47:44+0800
++- Commit: 3bbaa4b
++- Source review: reviews/phase-0-review.md
++
++## Resolved changes
++- Addressed deterministic strict-mode flow by reusing prefilter contract in order-intent building:
++    - `TradingAgentsGraph.build_order_intent(...)` now accepts optional `quant_contract`.
++    - `TradingAgentsGraph.propagate(...)` accepts and forwards `quant_contract`.
++    - `TradingAgentsGraph.propagate_prefiltered_universe(...)` reconstructs and passes the prefilter contract to avoid a second live quant fetch.
++- Surfaced execution safety state to callers:
++    - `propagate(...)` now returns full `order_intent` dict, not only rating.
++    - CLI universe summary now displays both `rating` and `blocked` status.
++- Consolidated universe execution path:
++    - `cli/main.py::run_prefiltered_universe_analysis` delegates to `graph.propagate_prefiltered_universe(...)` (single source of truth).
++- Hardened contracts and dependency surface:
++    - `QuantSignalContract.from_raw` sets `score=-inf` on error payloads.
++    - Added `QuantSignalContract.from_dict` for round-trip reconstruction.
++    - Moved `vectorbt` to optional dependency extras in `pyproject.toml`.
++    - Added execution-mode validation warning in CLI via `parse_execution_mode()`.
++- Touched files in this fix cycle:
++    - `tradingagents/graph/trading_graph.py`
++    - `cli/main.py`
++    - `tradingagents/quant/contracts.py`
++    - `pyproject.toml`
++    - `main.py`
++    - `scripts/review.sh`
++
++## Validation
++- Command:
++    - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v`
++- Result:
++    - `Ran 15 tests in 0.434s`
++    - `OK`
++
++## Review findings snapshot
++I have all the information needed. Here is the Phase 0 review.
++
++---
++
++## Phase 0 Review — Execution Contracts
++
++**Reviewer:** Claude  
++**Date:** 2026-04-21  
++**Branch:** feature/quant
++
++---
++
++### Findings
++
++#### BLOCKER 1 — `item["contract"]` KeyError in `propagate_prefiltered_universe`
++
++**File:** `tradingagents/graph/trading_graph.py:433`
++
++**Issue:** `propagate_prefiltered_universe` reconstructs the prefilter contract with:
++```python
++cached_contract = QuantSignalContract.from_dict(item["contract"])
++```
++But `score_tickers_with_quant` in `prefilter.py` never writes a `"contract"` key. The items it returns contain `"raw"`, `"signal"`, `"score"`, etc. — but not `"contract"`. Every call to `propagate_prefiltered_universe` raises `KeyError: 'contract'` before any analysis runs.
++
++**Impact:** The entire universe-mode code path is dead on arrival. The strict-mode determinism guarantee (reuse prefilter contract, skip second live fetch) is impossible to exercise.
++
++**Minimal fix:** In `prefilter.py`, before appending each scored item, build and store the contract dict:
++```python
++contract_obj = QuantSignalContract.from_raw(symbol, trade_date, parsed)
++scored.append({
++    ...,
++    "contract": contract_obj.to_dict(),   # add this
++    "raw": parsed,
++})
++```
++`from_dict` in `propagate_prefiltered_universe` then receives the correct shape.
++
++---
++
++#### BLOCKER 2 — CLI bypasses `propagate_prefiltered_universe`; `quant_strict` determinism violated
++
++**File:** `cli/main.py`, function `run_prefiltered_universe_analysis` (~line 662–712)
++
++**Issue:** The CLI calls `score_tickers_with_quant` directly then calls `graph.propagate(symbol, analysis_date)` with no `quant_contract` argument:
++```python
++for item in selected:
++    final_state, decision = graph.propagate(symbol, analysis_date)
++```
++This means: (a) `propagate_prefiltered_universe` is never called, making it dead code at the CLI layer; (b) in `quant_strict` mode `build_order_intent` cannot skip the live fetch because no `quant_contract` is passed — a second `get_quant_signals.func` call is made, violating the stated determinism guarantee; (c) `decision` is an `order_intent` dict, and `str(decision).upper()` prints the entire dict repr in the summary table instead of the rating; (d) the **Blocked** column promised in the handoff is absent from the summary table.
++
++**Impact:** Phase 0's primary contract invariant ("prefilter contract is reused by `build_order_intent`, no second live fetch") cannot be verified from the CLI. Any backtesting or audit of the `quant_strict` path will silently double-fetch and may produce mismatched signals.
++
++**Minimal fix:** Replace the body of `run_prefiltered_universe_analysis` to delegate:
++```python
++result = graph.propagate_prefiltered_universe(
++    tickers, analysis_date, top_n=top_n,
++    cache_dir=cache_dir, cache_ttl_days=..., refresh_cache=...
++)
++for symbol, data in result["analysis"].items():
++    oi = data["order_intent"]
++    summary_table.add_row(
++        symbol,
++        f"{data['quant']['score']:.2f}",
++        str(data['quant'].get('signal','?')).upper(),
++        oi["rating"],
++        "YES" if oi["blocked"] else "NO",
++    )
++```
++Also add a **Blocked** column to `summary_table`.
++
++---
++
++#### HIGH — `.vscode/settings.json` is invalid JSON
++
++**File:** `.vscode/settings.json`
++
++**Issue:** The file contains two sibling JSON root objects:
++```json
++{
++    "python.defaultInterpreterPath": "...",
++    "python.pythonPath": "..."
++}
++{
++    "python-envs.defaultEnvManager": "ms-python.python:venv"
++}
++```
++JSON allows exactly one root value. VS Code's JSON parser will reject this file silently or with a parse error; the `python-envs` setting is lost.
++
++**Impact:** Dev tooling misconfiguration; the venv manager setting is ignored. Not a runtime blocker but the handoff claims this was *fixed*.
++
++**Minimal fix:** Merge into one object:
++```json
++{
++    "python.defaultInterpreterPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
++    "python.pythonPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
++    "python-envs.defaultEnvManager": "ms-python.python:venv"
++}
++```
++
++---
++
++#### MEDIUM — `requirements.txt` editable-install entry removed; handoff contradicts patch
++
++**File:** `requirements.txt`
++
++**Issue:** The patch changes the file from `.` (editable self-install) to blank. The handoff explicitly states "editable install entry (`.`) present." These contradict each other. Any developer or CI job using `pip install -r requirements.txt` instead of `pip install .` will install nothing.
++
++**Impact:** Low runtime impact (CLAUDE.md uses `pip install .` directly), but the contradiction between handoff and patch is a documentation integrity failure and will confuse the next-phase agent.
++
++**Minimal fix:** Restore `.` in `requirements.txt` and correct the handoff entry, or explicitly document that `requirements.txt` is intentionally stripped and `pyproject.toml` is the install surface.
++
++---
++
++#### LOW — `parse_execution_mode` silently coerces invalid values with no diagnostic
++
++**File:** `tradingagents/quant/contracts.py:116–119`
++
++**Issue:**
++```python
++def parse_execution_mode(value: Optional[str]) -> ExecutionMode:
++    normalized = str(value or "llm_assisted").strip().lower()
++    if normalized not in {"llm_assisted", "quant_strict"}:
++        return "llm_assisted"   # silent fallback
++```
++A typo in the config (e.g. `"quant-strict"`) silently becomes `llm_assisted`. No log, no warning.
++
++**Impact:** Operators setting `TRADINGAGENTS_EXECUTION_MODE=quant-strict` (hyphen) believe they are in strict mode but are running LLM-assisted. No execution leakage, but operational visibility is lost.
++
++**Minimal fix:** Add a `warnings.warn(f"Unknown execution_mode '{value}', defaulting to 'llm_assisted'")` before returning.
++
++---
++
++#### LOW — `QuantSignalLabel` not exported from `tradingagents/quant/__init__.py`
++
++**File:** `tradingagents/quant/__init__.py`
++
++**Issue:** `QuantSignalLabel` is used externally for pattern-matching on signal values (e.g. in `rating_from_quant_signal`) but is absent from `__all__` and not importable via `from tradingagents.quant import QuantSignalLabel`.
++
++**Impact:** Next-phase agents that need to branch on `signal == QuantSignalLabel.BUY` must reach into `contracts` directly, which bypasses the stable public interface.
++
++**Minimal fix:** Add `QuantSignalLabel` to `__init__.py` exports.
++
++---
++
++### Contract-Completeness Checklist
++
++| Criterion | Status |
++|---|---|
++| Typed contracts cover all execution paths | PASS — `QuantSignalContract`, `OrderIntentContract`, `TradeRating` are present and immutable |
++| No text parsing for order execution in `quant_strict` | PASS — `build_order_intent` uses `rating_from_quant_signal`, not regex |
++| LLM outputs are annotation-only in strict mode | PASS — LLM decision text stored in `annotations["llm_final_trade_decision"]`, never drives rating |
++| Config defaults are safe | PASS — `llm_assisted` is the default; `quant_strict` must be opted in |
++| `from_raw` sets `score = float('-inf')` on error | PASS — confirmed at contracts.py:58 |
++| `propagate` returns `(state, order_intent_dict)` with `blocked` | PASS — return shape is correct |
++| CLI surfaces `blocked` | FAIL — see BLOCKER 2 |
++| Prefilter contract reused in `quant_strict` (no double-fetch) | FAIL — see BLOCKER 1 + BLOCKER 2 |
++| `propagate_prefiltered_universe` is the single CLI code path | FAIL — see BLOCKER 2 |
++
++---
++
++### Merge Decision: **CHANGES_REQUIRED**
++
++**Top 3 required fixes before re-review:**
++
++1. **Add `"contract"` key to `score_tickers_with_quant` output** (`prefilter.py`): store `QuantSignalContract.from_raw(symbol, trade_date, parsed).to_dict()` so `propagate_prefiltered_universe` can call `from_dict` without a `KeyError`.
++
++2. **Rewrite CLI `run_prefiltered_universe_analysis` to delegate to `graph.propagate_prefiltered_universe`** (`cli/main.py`): remove the direct `score_tickers_with_quant` + `graph.propagate` calls; surface `order_intent["rating"]` and `order_intent["blocked"]` in the summary table columns as documented in the handoff.
++
++3. **Fix `.vscode/settings.json`** to be valid JSON by merging both objects into a single root object.
+diff --git a/docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md b/docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md
+new file mode 100644
+index 0000000..00580e8
+--- /dev/null
++++ b/docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md
+@@ -0,0 +1,177 @@
++# Phase 0 Fix Notes
++
++- Title: Pre-Phase-1 fixes from APPROVE review
++- Date: 2026-04-21T16:21:34+0800
++- Commit: 3bbaa4b
++- Source review: reviews/phase-0-review.md
++
++## Resolved changes
++- Summarize concrete fixes applied in this pass.
++- List touched files and key behavior changes.
++
++## Validation
++- Add exact test command(s) run after fixes.
++- Add test result summary (pass/fail, counts).
++
++## Review findings snapshot
++I have a complete picture. Here is the review.
++
++---
++
++## Phase 0 Review — Execution Contracts
++
++**Reviewer:** Claude · **Date:** 2026-04-21 · **Phase:** 0
++
++---
++
++### Findings
++
++#### MEDIUM — `from_raw` score fallback is `0.0` for non-error payloads with unparseable `score`
++
++**File:** `tradingagents/quant/contracts.py:58–60`
++
++```python
++try:
++    score = float('-inf') if payload.get("error") else float(payload.get("score", 0.0))
++except (TypeError, ValueError):
++    score = 0.0   # <── falls here when error is absent but score is malformed
++```
++
++**Impact:** A tool response with no `"error"` key but a malformed `"score"` (e.g., `"score": "N/A"`) silently receives `score=0.0`. This puts it at the HOLD boundary and lets it compete for top-N selection against legitimately-scored tickers. The expected safe sentinel is `-inf`.
++
++**Minimal fix:**
++```python
++except (TypeError, ValueError):
++    score = float("-inf")
++```
++
++---
++
++#### MEDIUM — `llm_assisted` order intent sets `blocked=False` unconditionally on extraction failure
++
++**File:** `tradingagents/graph/trading_graph.py:363–378`
++
++```python
++try:
++    rating = TradeRating(extracted)
++except ValueError:
++    rating = TradeRating.HOLD   # extraction failed → becomes HOLD
++intent = OrderIntentContract(
++    ...
++    blocked=False,              # ← never reflects the failure
++    ...
++)
++```
++
++**Impact:** If LLM output is garbled and the `TradeRating(extracted)` cast fails, the returned intent carries `rating=HOLD, blocked=False` — indistinguishable from a genuine HOLD. Downstream phases that gate on `blocked` will treat an extraction failure as an actionable decision. The `quant_strict` path correctly sets `blocked=quant_contract.error is not None`; `llm_assisted` should mirror this discipline.
++
++**Minimal fix:** Track whether fallback fired:
++```python
++try:
++    rating = TradeRating(extracted)
++    extraction_failed = False
++except ValueError:
++    rating = TradeRating.HOLD
++    extraction_failed = True
++intent = OrderIntentContract(
++    ...
++    blocked=extraction_failed,
++    reason="LLM extraction fallback to HOLD." if extraction_failed else "LLM-assisted decision.",
++    ...
++)
++```
++
++---
++
++#### MEDIUM — `process_signal` in `quant_strict` mode does regex text parsing without execution guard
++
++**File:** `tradingagents/graph/signal_processing.py:26–28`
++
++```python
++if mode == "quant_strict":
++    return rating_from_text(full_signal).value   # regex text parse
++```
++
++**Impact:** `graph.process_signal()` is a public method. The current `build_order_intent` correctly bypasses it in `quant_strict` mode, but a future phase author calling `graph.process_signal()` gets a text-parsed result silently — violating the "no text parsing for execution" contract. There is nothing in the interface to prevent this mistake.
++
++**Minimal fix:** Raise or warn in strict mode to surface the misuse boundary:
++```python
++if mode == "quant_strict":
++    raise RuntimeError(
++        "process_signal must not be used for execution in quant_strict mode; "
++        "use build_order_intent with a QuantSignalContract instead."
++    )
++```
++
++---
++
++#### LOW — `from_dict` does not coerce `score` to `float`
++
++**File:** `tradingagents/quant/contracts.py:87`
++
++```python
++score=data["score"],   # no float() conversion
++```
++
++`from_raw` always stores a `float`. `from_dict` does not coerce, so integer values (e.g., from manually constructed dicts or future schema drift) propagate as `int`. Type annotations are not enforced at runtime; the sort in `prefilter.py` and any `< / > / ==` comparisons will still work, but code expecting `isinstance(c.score, float)` would silently fail.
++
++**Minimal fix:** `score=float(data["score"])`.
++
++---
++
++#### LOW — `QuantSignalLabel.UNKNOWN` silently maps to `TradeRating.HOLD`
++
++**File:** `tradingagents/quant/contracts.py:122–127`
++
++`rating_from_quant_signal` returns `TradeRating.HOLD` for any signal that is not BUY or SELL, including UNKNOWN. A UNKNOWN signal arises when the quant tool returns an unrecognized label. This is already pushed to the bottom of ranking by the error sort key in `prefilter.py`, but if it somehow enters `build_order_intent` directly it becomes an unblocked HOLD.
++
++**Minimal fix:** Add `QuantSignalLabel.UNKNOWN` to the `blocked` condition in `build_order_intent`:
++```python
++blocked=quant_contract.error is not None or quant_contract.signal == QuantSignalLabel.UNKNOWN,
++```
++
++---
++
++#### LOW — Patch diff for `.vscode/settings.json` shows invalid JSON (two separate objects)
++
++**File:** `.vscode/settings.json` (diff only)
++
++The diff adds two separate top-level JSON objects (syntactically invalid). The on-disk file is valid (all keys merged into one object). The diff is misleading — presumably an editing artifact — but not a runtime issue.
++
++---
++
++### Review of Handoff Claims
++
++| Claim | Verified |
++|---|---|
++| `quant_strict` order intent derived from typed contract, no LLM | ✓ `build_order_intent` uses `rating_from_quant_signal`, never calls LLM |
++| Prefilter contract reused in `propagate_prefiltered_universe` (no second fetch) | ✓ `item["contract"]` exists in scored items; `from_dict` reconstructs and passes as `quant_contract` |
++| `propagate` return carries `blocked` | ✓ `order_intent.get("blocked")` present in `propagate_prefiltered_universe` and CLI |
++| CLI delegates to `graph.propagate_prefiltered_universe` | ✓ |
++| Summary table includes Blocked column | ✓ |
++| `--execution-mode` CLI flag with validation warning | ✓ `cli/main.py:1084–1089` |
++| `vectorbt` in optional-dependencies | ✓ `pyproject.toml:36` |
++| `try/except ImportError` guard in `quant_tools.py` | ✓ |
++| Tests cover strict-mode avoidance of LLM | ✓ `_FailLLM` sentinel in `test_execution_contracts` |
++
++---
++
++### Merge Decision: **APPROVE**
++
++The Phase 0 acceptance criteria are met:
++
++- All execution paths in `quant_strict` mode go through typed contracts (`QuantSignalContract` → `OrderIntentContract`); no LLM inference is invoked in the order-intent derivation path.
++- `propagate_prefiltered_universe` correctly reuses the prefiltered contract, preserving determinism.
++- `blocked` is present in the returned `order_intent_dict` and surfaced by the CLI.
++- Config defaults are safe; `execution_mode` defaults to `"llm_assisted"` with env and CLI override.
++- Contracts are stable typed interfaces suitable for Phase 1 to build on.
++
++---
++
++### Top 3 Required Fixes Before Phase 1
++
++1. **`from_raw` score fallback** (`contracts.py:60`): Change `score = 0.0` on `except` to `score = float("-inf")` so malformed non-error payloads rank below legitimate signals rather than landing at the HOLD boundary.
++
++2. **`llm_assisted` blocked flag** (`trading_graph.py:363–378`): Set `blocked=True` when `TradeRating(extracted)` raises `ValueError` so extraction failures are distinguishable from genuine HOLD decisions by downstream consumers of `order_intent_dict`.
++
++3. **`process_signal` guard in `quant_strict`** (`signal_processing.py:27–28`): Raise `RuntimeError` instead of silently returning a text-parsed result in `quant_strict` mode. This enforces the "no text parsing for execution" contract at the interface boundary, preventing accidental misuse by future phases.
+diff --git a/docs/handoffs/history/phase-0/handoff-20260421_160554-3bbaa4b.md b/docs/handoffs/history/phase-0/handoff-20260421_160554-3bbaa4b.md
+new file mode 100644
+index 0000000..e080027
+--- /dev/null
++++ b/docs/handoffs/history/phase-0/handoff-20260421_160554-3bbaa4b.md
+@@ -0,0 +1,49 @@
++# Phase 0 Handoff - Execution Contracts
++Agent: Copilot
++Date: 2026-04-21 (revised after review)
++
++## What was built
++- `tradingagents/quant/contracts.py`: added deterministic typed contracts and helpers for execution mode parsing, quant signal normalization, and order intent construction. Added `QuantSignalContract.from_dict()` for round-trip reconstruction from stored dicts. `from_raw` sets `score = float('-inf')` when `error` is present.
++- `tradingagents/quant/__init__.py`: exported contract symbols for import stability.
++- `tradingagents/default_config.py`: added `execution_mode` config key and safe integer env parsing for quant cache TTL.
++- `tradingagents/graph/trading_graph.py`: `propagate` now returns `(final_state, order_intent_dict)` where `order_intent_dict` includes `rating` and `blocked`. `build_order_intent` accepts an optional `quant_contract` parameter; when provided in `quant_strict` mode the live fetch is skipped, preserving determinism for universe flows. `propagate_prefiltered_universe` reconstructs the prefilter contract via `from_dict` and passes it through, eliminating duplicate quant API calls.
++- `tradingagents/graph/signal_processing.py`: strict mode now avoids LLM calls and uses deterministic rating extraction.
++- `tradingagents/graph/prefilter.py`: quant ranking now includes normalized `QuantSignalContract` payload in each scored item.
++- `cli/main.py`: added `--execution-mode` option with `parse_execution_mode()` validation and warning on unknown values. `run_prefiltered_universe_analysis` now delegates to `graph.propagate_prefiltered_universe` (single code path). Summary table includes a **Blocked** column so errored signals are never silently shown as actionable decisions.
++- `.vscode/settings.json`: fixed invalid JSON and kept single interpreter object.
++- `requirements.txt`: editable install entry (`.`) present.
++- `pyproject.toml`: `vectorbt` moved to `[project.optional-dependencies]` (`vectorbt` extras group); the `try/except` guard in `quant_tools.py` is now the correct defensive pattern for optional installs.
++- `tests/test_execution_contracts.py`: added unit tests for contracts and strict-mode signal processing behavior.
++
++## Contracts exposed to next phase
++- `QuantSignalContract` (`tradingagents/quant/contracts.py`): deterministic normalized quant signal schema. Use `from_raw()` to parse tool output; use `from_dict()` to reconstruct from stored payload.
++- `OrderIntentContract` (`tradingagents/quant/contracts.py`): typed execution intent schema with `source`/`execution_mode`/`blocked`/`reason`/`annotations`.
++- `ExecutionMode` (`tradingagents/quant/contracts.py`): `"llm_assisted" | "quant_strict"` mode contract.
++- `TradeRating` (`tradingagents/quant/contracts.py`): enum of `{BUY, OVERWEIGHT, HOLD, UNDERWEIGHT, SELL}`.
++- `TradingAgentsGraph.propagate(symbol, trade_date, quant_contract=None)` returns `(final_state, order_intent_dict)`.
++- `TradingAgentsGraph.build_order_intent(symbol, trade_date, text, quant_contract=None)` — canonical execution intent builder.
++
++## Config keys added
++- `execution_mode`: `str`, default `llm_assisted`, env override `TRADINGAGENTS_EXECUTION_MODE`.
++- `quant_prefilter_cache_ttl_days`: now read with safe parsing from env `TRADINGAGENTS_QUANT_CACHE_TTL_DAYS`.
++
++## Test command
++`/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v`
++
++Expected: 15 tests, all OK.
++
++## Known limitations / deferred decisions
++- Strict mode currently derives executable intent from `get_quant_signals` per symbol/date; no broker adapter wiring yet (planned for later phases).
++- `propagate` still executes the LLM graph for annotations/reporting; strict mode only changes order-intent derivation path.
++- `OrderIntentContract` is consumed as a dict in CLI/graph compatibility paths; dataclass-native handoff to broker layer is deferred to Phase 4.
++- DashScope aliasing has no log warning when env var substitution fires (LOW severity, no execution impact).
++
++## What the reviewer must focus on
++- Verify no LLM-dependent extraction is required to get strict-mode order intent.
++- Verify `execution_mode=quant_strict` is deterministic: prefilter contract is reused by `build_order_intent`, no second live fetch.
++- Verify `propagate` return value carries `blocked` and callers surface it.
++- Verify typed contracts are the stable interface for next phases and no duplicate contract schema exists elsewhere.
++- Verify CLI routes through `graph.propagate_prefiltered_universe` (not a separate direct call to `score_tickers_with_quant`).
++
++## Fix notes
++- 2026-04-21T15:47:44+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md
+diff --git a/docs/handoffs/history/phase-1/handoff-20260421_164340-3bbaa4b.md b/docs/handoffs/history/phase-1/handoff-20260421_164340-3bbaa4b.md
+new file mode 100644
+index 0000000..227bd85
+--- /dev/null
++++ b/docs/handoffs/history/phase-1/handoff-20260421_164340-3bbaa4b.md
+@@ -0,0 +1,59 @@
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- `intraday_default_session` config key is stored but not yet wired into `interface.get_intraday_bars()` as a default; callers must pass `session` explicitly.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Staleness prevention relies entirely on `as_of` cutoff and `refresh_cache=True`.
++
++## What the reviewer must focus on
++
++- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
++- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
++- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
++- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
++- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
++- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
++
++## Fix notes
++
++*(none yet — no review has been run for this phase)*
+diff --git a/docs/handoffs/history/phase-1/handoff-20260421_165039-3bbaa4b.md b/docs/handoffs/history/phase-1/handoff-20260421_165039-3bbaa4b.md
+new file mode 100644
+index 0000000..227bd85
+--- /dev/null
++++ b/docs/handoffs/history/phase-1/handoff-20260421_165039-3bbaa4b.md
+@@ -0,0 +1,59 @@
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- `intraday_default_session` config key is stored but not yet wired into `interface.get_intraday_bars()` as a default; callers must pass `session` explicitly.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Staleness prevention relies entirely on `as_of` cutoff and `refresh_cache=True`.
++
++## What the reviewer must focus on
++
++- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
++- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
++- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
++- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
++- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
++- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
++
++## Fix notes
++
++*(none yet — no review has been run for this phase)*
+diff --git a/docs/handoffs/history/phase-1/handoff-20260421_165646-3bbaa4b.md b/docs/handoffs/history/phase-1/handoff-20260421_165646-3bbaa4b.md
+new file mode 100644
+index 0000000..48252ef
+--- /dev/null
++++ b/docs/handoffs/history/phase-1/handoff-20260421_165646-3bbaa4b.md
+@@ -0,0 +1,58 @@
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Freshness is controlled by bypassing cache reads for live/current date ranges and by `refresh_cache=True`.
++
++## What the reviewer must focus on
++
++- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
++- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
++- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
++- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
++- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
++- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
++
++## Fix notes
++
++*(none yet — no review has been run for this phase)*
+diff --git a/docs/handoffs/history/phase-1/handoff-20260421_170058-3bbaa4b.md b/docs/handoffs/history/phase-1/handoff-20260421_170058-3bbaa4b.md
+new file mode 100644
+index 0000000..48252ef
+--- /dev/null
++++ b/docs/handoffs/history/phase-1/handoff-20260421_170058-3bbaa4b.md
+@@ -0,0 +1,58 @@
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Freshness is controlled by bypassing cache reads for live/current date ranges and by `refresh_cache=True`.
++
++## What the reviewer must focus on
++
++- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
++- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
++- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
++- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
++- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
++- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
++
++## Fix notes
++
++*(none yet — no review has been run for this phase)*
+diff --git a/docs/handoffs/history/phase-1/handoff-20260421_170614-3bbaa4b.md b/docs/handoffs/history/phase-1/handoff-20260421_170614-3bbaa4b.md
+new file mode 100644
+index 0000000..48252ef
+--- /dev/null
++++ b/docs/handoffs/history/phase-1/handoff-20260421_170614-3bbaa4b.md
+@@ -0,0 +1,58 @@
++# Phase 1 Handoff — Intraday Data Foundation
++
++Agent: Copilot
++Date: 2026-04-21
++
++## What was built
++
++- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
++    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
++    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
++    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
++    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
++    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
++    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
++    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
++    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
++- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
++- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
++- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
++- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
++
++## Contracts exposed to next phase
++
++- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
++- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
++
++## Config keys added
++
++- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
++- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
++- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
++- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
++
++## Test command
++
++```
++tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
++```
++Expected: 33 tests, all OK
++
++## Known limitations / deferred decisions
++
++- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
++- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
++- No TTL-based cache expiry for intraday cache. Freshness is controlled by bypassing cache reads for live/current date ranges and by `refresh_cache=True`.
++
++## What the reviewer must focus on
