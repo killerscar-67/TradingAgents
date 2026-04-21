@@ -29,9 +29,12 @@ dependencies = [
     "stockstats>=0.6.5",
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
-    "vectorbt>=0.28.1",
     "yfinance>=0.2.63",
+    "pyarrow>=14.0.0",
 ]
+
+[project.optional-dependencies]
+vectorbt = ["vectorbt>=0.28.1"]
 
 [project.scripts]
 tradingagents = "cli.main:app"

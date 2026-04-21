@@ -20,22 +20,19 @@ def get_quant_signals(
     slow_window: Annotated[int, "Slow moving average window"] = 50,
     rsi_window: Annotated[int, "RSI window length"] = 14,
 ) -> str:
-    """Generate a lightweight quant signal summary using vectorbt indicators."""
-    if vbt is None:
-        return json.dumps(
-            {
-                "error": "vectorbt is not installed",
-                "symbol": symbol,
-                "curr_date": curr_date,
-            }
-        )
+    """Generate a lightweight quant signal summary using indicator calculations.
+
+    If vectorbt is available, use it for MA/RSI; otherwise fall back to
+    pandas-based calculations so the default quant path remains functional.
+    """
 
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=lookback_days)
     history = yf.download(
         symbol,
         start=start_dt.strftime("%Y-%m-%d"),
-        end=(end_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+        # End is exclusive so trading-day screens do not include same-day bars.
+        end=end_dt.strftime("%Y-%m-%d"),
         auto_adjust=True,
         progress=False,
     )
@@ -60,9 +57,26 @@ def get_quant_signals(
             }
         )
 
-    fast_ma = vbt.MA.run(close, window=fast_window).ma
-    slow_ma = vbt.MA.run(close, window=slow_window).ma
-    rsi = vbt.RSI.run(close, window=rsi_window).rsi
+    if vbt is not None:
+        fast_ma = vbt.MA.run(close, window=fast_window).ma
+        slow_ma = vbt.MA.run(close, window=slow_window).ma
+        rsi = vbt.RSI.run(close, window=rsi_window).rsi
+    else:
+        fast_ma = close.rolling(window=fast_window, min_periods=fast_window).mean()
+        slow_ma = close.rolling(window=slow_window, min_periods=slow_window).mean()
+
+        delta = close.diff()
+        gains = delta.clip(lower=0)
+        losses = -delta.clip(upper=0)
+        avg_gain = gains.rolling(window=rsi_window, min_periods=rsi_window).mean()
+        avg_loss = losses.rolling(window=rsi_window, min_periods=rsi_window).mean()
+        # Preserve RSI extremes in edge cases:
+        # - avg_gain > 0, avg_loss == 0 -> RSI 100
+        # - avg_gain == 0, avg_loss > 0 -> RSI 0
+        # - avg_gain == 0, avg_loss == 0 -> neutral (filled to 50 below)
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        rsi = rsi.fillna(50.0)
 
     latest_price = float(close.iloc[-1])
     latest_fast = float(fast_ma.iloc[-1])

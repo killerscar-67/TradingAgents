@@ -40,6 +40,15 @@ from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
 from .prefilter import score_tickers_with_quant
+from tradingagents.quant.contracts import (
+    ExecutionMode,
+    OrderIntentContract,
+    QuantSignalContract,
+    QuantSignalLabel,
+    TradeRating,
+    parse_execution_mode,
+    rating_from_quant_signal,
+)
 
 
 class TradingAgentsGraph:
@@ -63,6 +72,7 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.execution_mode: ExecutionMode = parse_execution_mode(self.config.get("execution_mode"))
 
         # Update the interface's config
         set_config(self.config)
@@ -192,8 +202,26 @@ class TradingAgentsGraph:
             ),
         }
 
-    def propagate(self, company_name, trade_date):
-        """Run the trading agents graph for a company on a specific date."""
+    def propagate(
+        self,
+        company_name,
+        trade_date,
+        quant_contract: Optional["QuantSignalContract"] = None,
+    ):
+        """Run the trading agents graph for a company on a specific date.
+
+        Args:
+            company_name: Ticker symbol or company identifier.
+            trade_date: Date string (YYYY-MM-DD) or date object.
+            quant_contract: Optional pre-scored QuantSignalContract. When provided
+                in quant_strict mode, the live quant fetch is skipped so the
+                returned order intent is derived from the same signal used during
+                prefiltering, preserving determinism.
+
+        Returns:
+            (final_state, order_intent) where order_intent is the full dict from
+            OrderIntentContract.to_dict(), including 'rating' and 'blocked'.
+        """
 
         self.ticker = company_name
 
@@ -224,8 +252,14 @@ class TradingAgentsGraph:
         # Log state
         self._log_state(trade_date, final_state)
 
-        # Return decision and processed signal
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        order_intent = self.build_order_intent(
+            company_name,
+            str(trade_date),
+            final_state["final_trade_decision"],
+            quant_contract=quant_contract,
+        )
+
+        return final_state, order_intent
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
@@ -287,7 +321,65 @@ class TradingAgentsGraph:
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
-        return self.signal_processor.process_signal(full_signal)
+        return self.signal_processor.process_signal(full_signal, execution_mode=self.execution_mode)
+
+    def build_order_intent(
+        self,
+        symbol: str,
+        trade_date: str,
+        final_trade_decision_text: str,
+        quant_contract: Optional[QuantSignalContract] = None,
+    ) -> Dict[str, Any]:
+        """Build a typed order intent contract for execution and downstream automation.
+
+        Args:
+            symbol: Ticker symbol.
+            trade_date: Date string (YYYY-MM-DD).
+            final_trade_decision_text: Raw LLM final trade decision text.
+            quant_contract: Optional pre-scored QuantSignalContract.  When provided
+                in quant_strict mode the live quant fetch is skipped, ensuring the
+                order intent is derived from the same signal used during prefiltering.
+        """
+        if self.execution_mode == "quant_strict":
+            if quant_contract is None:
+                raw_quant = get_quant_signals.func(symbol, trade_date)
+                quant_contract = QuantSignalContract.from_raw(symbol, trade_date, raw_quant)
+            rating = rating_from_quant_signal(quant_contract.signal)
+            intent = OrderIntentContract(
+                symbol=symbol,
+                trade_date=trade_date,
+                rating=rating,
+                source="quant_strict",
+                execution_mode="quant_strict",
+                blocked=quant_contract.error is not None or quant_contract.signal == QuantSignalLabel.UNKNOWN,
+                reason=quant_contract.error or ("Unknown quant signal." if quant_contract.signal == QuantSignalLabel.UNKNOWN else "Strict quant mode decision."),
+                annotations={
+                    "llm_final_trade_decision": final_trade_decision_text,
+                    "quant_signal": quant_contract.to_dict(),
+                },
+            )
+            return intent.to_dict()
+
+        try:
+            extracted = self.process_signal(final_trade_decision_text)
+            rating = TradeRating(extracted)
+            extraction_failed = False
+        except ValueError:
+            rating = TradeRating.HOLD
+            extraction_failed = True
+        intent = OrderIntentContract(
+            symbol=symbol,
+            trade_date=trade_date,
+            rating=rating,
+            source="llm_assisted",
+            execution_mode="llm_assisted",
+            blocked=extraction_failed,
+            reason="LLM extraction fallback to HOLD." if extraction_failed else "LLM-assisted decision extraction.",
+            annotations={
+                "llm_final_trade_decision": final_trade_decision_text,
+            },
+        )
+        return intent.to_dict()
 
     def rank_tickers_with_quant(
         self,
@@ -339,10 +431,16 @@ class TradingAgentsGraph:
         analysis = {}
         for item in prefilter["selected"]:
             symbol = item["symbol"]
-            final_state, decision = self.propagate(symbol, trade_date)
+            # Reconstruct the pre-scored contract so build_order_intent in
+            # quant_strict mode reuses it instead of making a second live fetch.
+            cached_contract = QuantSignalContract.from_dict(item["contract"])
+            final_state, order_intent = self.propagate(
+                symbol, trade_date, quant_contract=cached_contract
+            )
             analysis[symbol] = {
                 "quant": item,
-                "decision": decision,
+                "order_intent": order_intent,
+                "blocked": order_intent.get("blocked", False),
                 "final_state": final_state,
             }
 

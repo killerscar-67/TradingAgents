@@ -48,13 +48,13 @@ class QuantPrefilterTests(unittest.TestCase):
         with TemporaryDirectory() as cache_dir:
             first = score_tickers_with_quant(
                 ["AAPL", "MSFT"],
-                "2026-04-21",
+                "2026-04-01",
                 top_n=2,
                 cache_dir=cache_dir,
             )
             second = score_tickers_with_quant(
                 ["AAPL", "MSFT"],
-                "2026-04-21",
+                "2026-04-01",
                 top_n=2,
                 cache_dir=cache_dir,
             )
@@ -73,7 +73,7 @@ class QuantPrefilterTests(unittest.TestCase):
         with TemporaryDirectory() as cache_dir:
             score_tickers_with_quant(
                 ["AAPL"],
-                "2026-04-21",
+                "2026-04-01",
                 top_n=1,
                 cache_dir=cache_dir,
                 cache_ttl_days=1,
@@ -87,7 +87,7 @@ class QuantPrefilterTests(unittest.TestCase):
 
             second = score_tickers_with_quant(
                 ["AAPL"],
-                "2026-04-21",
+                "2026-04-01",
                 top_n=1,
                 cache_dir=cache_dir,
                 cache_ttl_days=1,
@@ -106,6 +106,60 @@ class QuantPrefilterTests(unittest.TestCase):
         with TemporaryDirectory() as cache_dir:
             score_tickers_with_quant(
                 ["AAPL"],
+                "2026-04-01",
+                top_n=1,
+                cache_dir=cache_dir,
+            )
+            second = score_tickers_with_quant(
+                ["AAPL"],
+                "2026-04-01",
+                top_n=1,
+                cache_dir=cache_dir,
+                refresh_cache=True,
+            )
+
+        self.assertEqual(mock_quant.call_count, 2)
+        self.assertFalse(second["ranked"][0]["cache_hit"])
+
+    @patch("tradingagents.graph.prefilter.get_quant_signals.func")
+    def test_prefilter_does_not_cache_error_payloads(self, mock_quant):
+        mock_quant.side_effect = [
+            '{"error":"No price history returned"}',
+            '{"signal":"buy","score":0.8,"confidence":0.7}',
+        ]
+
+        with TemporaryDirectory() as cache_dir:
+            first = score_tickers_with_quant(
+                ["AAPL"],
+                "2026-04-01",
+                top_n=1,
+                cache_dir=cache_dir,
+            )
+            second = score_tickers_with_quant(
+                ["AAPL"],
+                "2026-04-01",
+                top_n=1,
+                cache_dir=cache_dir,
+            )
+
+        self.assertEqual(mock_quant.call_count, 2)
+        self.assertFalse(first["ranked"][0]["cache_hit"])
+        self.assertFalse(second["ranked"][0]["cache_hit"])
+        self.assertEqual(first["ranked"][0]["error"], "No price history returned")
+        self.assertEqual(second["ranked"][0]["symbol"], "AAPL")
+        self.assertEqual(second["ranked"][0]["signal"], "buy")
+
+    @patch("tradingagents.graph.prefilter.get_quant_signals.func")
+    @patch("tradingagents.graph.prefilter._is_live_trade_date", return_value=True)
+    def test_prefilter_live_trade_date_bypasses_cache(self, _mock_live, mock_quant):
+        mock_quant.side_effect = [
+            '{"signal":"buy","score":0.8,"confidence":0.7}',
+            '{"signal":"hold","score":0.1,"confidence":0.5}',
+        ]
+
+        with TemporaryDirectory() as cache_dir:
+            first = score_tickers_with_quant(
+                ["AAPL"],
                 "2026-04-21",
                 top_n=1,
                 cache_dir=cache_dir,
@@ -115,8 +169,11 @@ class QuantPrefilterTests(unittest.TestCase):
                 "2026-04-21",
                 top_n=1,
                 cache_dir=cache_dir,
-                refresh_cache=True,
             )
 
+            cache_files = list(Path(cache_dir).glob("*.json"))
+
         self.assertEqual(mock_quant.call_count, 2)
+        self.assertFalse(first["ranked"][0]["cache_hit"])
         self.assertFalse(second["ranked"][0]["cache_hit"])
+        self.assertEqual(len(cache_files), 0)

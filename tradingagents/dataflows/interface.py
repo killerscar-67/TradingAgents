@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Optional
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -23,6 +23,7 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .intraday import get_intraday_bars as _get_intraday_bars_yfinance
 
 # Configuration and routing logic
 from .config import get_config
@@ -57,7 +58,13 @@ TOOLS_CATEGORIES = {
             "get_global_news",
             "get_insider_transactions",
         ]
-    }
+    },
+    "intraday_data": {
+        "description": "Intraday OHLCV bar data (15m, 4h)",
+        "tools": [
+            "get_intraday_bars",
+        ]
+    },
 }
 
 VENDOR_LIST = [
@@ -106,6 +113,10 @@ VENDOR_METHODS = {
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+    },
+    # intraday_data
+    "get_intraday_bars": {
+        "yfinance": _get_intraday_bars_yfinance,
     },
 }
 
@@ -160,3 +171,42 @@ def route_to_vendor(method: str, *args, **kwargs):
             continue  # Only rate limits trigger fallback
 
     raise RuntimeError(f"No available vendor for '{method}'")
+
+
+def get_intraday_bars(
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str,
+    as_of=None,
+    session: Optional[str] = None,
+    cache_dir=None,
+    refresh_cache: bool = False,
+):
+    """Route intraday bar requests through the configured vendor.
+
+    Uses the ``intraday_data`` vendor from config (default: ``yfinance``).
+    All arguments are forwarded to the underlying vendor implementation.
+    See :func:`tradingagents.dataflows.intraday.get_intraday_bars` for full
+    parameter documentation.
+    """
+    config = get_config()
+    resolved_session = session or config.get("intraday_default_session", "regular")
+    resolved_cache_dir = cache_dir or config.get("intraday_cache_dir")
+    resolved_refresh_cache = refresh_cache or bool(config.get("intraday_refresh_cache", False))
+    vendor = config.get("data_vendors", {}).get("intraday_data", "yfinance")
+    # tool-level override takes precedence
+    vendor = config.get("tool_vendors", {}).get("get_intraday_bars", vendor)
+    impl = VENDOR_METHODS["get_intraday_bars"].get(vendor)
+    if impl is None:
+        raise NotImplementedError(f"Vendor {vendor!r} is not available for get_intraday_bars")
+    return impl(
+        symbol=symbol,
+        interval=interval,
+        start=start,
+        end=end,
+        as_of=as_of,
+        session=resolved_session,
+        cache_dir=resolved_cache_dir,
+        refresh_cache=resolved_refresh_cache,
+    )

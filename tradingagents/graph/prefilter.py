@@ -5,9 +5,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tradingagents.agents.utils.quant_tools import get_quant_signals
+from tradingagents.quant.contracts import QuantSignalContract
 
 
 _CACHE_VERSION = "v1"
+
+
+def _is_live_trade_date(trade_date: str) -> bool:
+    """Return True if trade_date is today or later in UTC calendar terms."""
+    return datetime.strptime(trade_date, "%Y-%m-%d").date() >= datetime.now(timezone.utc).date()
 
 
 def _to_stable_json(value: Dict[str, Any]) -> str:
@@ -29,7 +35,7 @@ def _get_cache_path(
 
     params_json = _to_stable_json(quant_kwargs)
     digest_src = f"{_CACHE_VERSION}|{symbol}|{trade_date}|{params_json}"
-    digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()[:20]
     return cache_root / f"{symbol}_{trade_date}_{digest}.json"
 
 
@@ -114,6 +120,7 @@ def score_tickers_with_quant(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Rank a ticker universe with the quant tool and select top-N for LLM analysis."""
     quant_kwargs = quant_kwargs or {}
+    is_live_trade_date = _is_live_trade_date(trade_date)
     cleaned = []
     seen = set()
     for ticker in tickers:
@@ -125,14 +132,17 @@ def score_tickers_with_quant(
     scored: List[Dict[str, Any]] = []
     for symbol in cleaned:
         cache_path = _get_cache_path(cache_dir, symbol, trade_date, quant_kwargs)
-        parsed = _load_cached_raw(
-            cache_path,
-            symbol,
-            trade_date,
-            quant_kwargs,
-            ttl_days=cache_ttl_days,
-            refresh_cache=refresh_cache,
-        )
+        use_cache = (not refresh_cache) and (not is_live_trade_date)
+        parsed = None
+        if use_cache:
+            parsed = _load_cached_raw(
+                cache_path,
+                symbol,
+                trade_date,
+                quant_kwargs,
+                ttl_days=cache_ttl_days,
+                refresh_cache=False,
+            )
         cache_hit = parsed is not None
 
         if parsed is None:
@@ -143,23 +153,25 @@ def score_tickers_with_quant(
                     parsed = {"summary": str(parsed)}
             except Exception:
                 parsed = {"summary": str(raw)}
-            _save_cached_raw(cache_path, symbol, trade_date, quant_kwargs, parsed)
+            # Do not persist error payloads; transient upstream failures should
+            # not poison the cache for the entire TTL window.
+            if (not is_live_trade_date) and (not parsed.get("error")):
+                _save_cached_raw(cache_path, symbol, trade_date, quant_kwargs, parsed)
 
-        error = parsed.get("error")
-        try:
-            score = float(parsed.get("score", float("-inf")))
-        except (TypeError, ValueError):
-            score = float("-inf")
+        signal_contract = QuantSignalContract.from_raw(symbol, trade_date, parsed)
+        error = signal_contract.error
+        score = signal_contract.score if error is None else float("-inf")
 
         scored.append(
             {
                 "symbol": symbol,
                 "score": score,
-                "signal": parsed.get("signal", "unknown"),
-                "confidence": parsed.get("confidence"),
-                "summary": parsed.get("summary", ""),
+                "signal": signal_contract.signal.value,
+                "confidence": signal_contract.confidence,
+                "summary": signal_contract.summary,
                 "error": error,
                 "cache_hit": cache_hit,
+                "contract": signal_contract.to_dict(),
                 "raw": parsed,
             }
         )

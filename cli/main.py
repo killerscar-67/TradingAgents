@@ -35,8 +35,8 @@ from rich.align import Align
 from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.graph.prefilter import score_tickers_with_quant
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.quant.contracts import parse_execution_mode
 from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
@@ -679,15 +679,16 @@ def run_prefiltered_universe_analysis(selections, graph):
     console.print(
         f"\n[cyan]Running quant prefilter for {len(tickers)} tickers and selecting top {top_n}...[/cyan]"
     )
-    cache_dir = str(Path(graph.config["data_cache_dir"]) / "quant_prefilter")
-    prefilter = score_tickers_with_quant(
-        tickers,
-        analysis_date,
-        top_n,
-        cache_dir=cache_dir,
+
+    result = graph.propagate_prefiltered_universe(
+        tickers=tickers,
+        trade_date=analysis_date,
+        top_n=top_n,
         cache_ttl_days=selections.get("quant_cache_ttl_days"),
         refresh_cache=selections.get("refresh_quant_cache", False),
     )
+    prefilter = result["prefilter"]
+    analysis = result["analysis"]
     selected = prefilter["selected"]
 
     if not selected:
@@ -701,6 +702,7 @@ def run_prefiltered_universe_analysis(selections, graph):
     rank_table.add_column("Selected", justify="center")
 
     selected_symbols = {item["symbol"] for item in selected}
+    cache_dir = str(Path(graph.config["data_cache_dir"]) / "quant_prefilter")
     cache_hits = sum(1 for item in prefilter["ranked"] if item.get("cache_hit"))
     console.print(
         f"[dim]Quant cache hits: {cache_hits}/{len(prefilter['ranked'])} (cache: {cache_dir})[/dim]"
@@ -719,23 +721,31 @@ def run_prefiltered_universe_analysis(selections, graph):
     summary_table.add_column("Ticker", style="cyan")
     summary_table.add_column("Quant Score", justify="right")
     summary_table.add_column("Quant Signal", justify="center")
-    summary_table.add_column("LLM Decision", justify="center")
+    summary_table.add_column("Decision", justify="center")
+    summary_table.add_column("Blocked", justify="center")
 
     for item in selected:
         symbol = item["symbol"]
-        console.print(f"\n[bold green]Analyzing {symbol} ({analysis_date})[/bold green]")
-        final_state, decision = graph.propagate(symbol, analysis_date)
+        sym_result = analysis.get(symbol, {})
+        order_intent = sym_result.get("order_intent", {})
+        rating = order_intent.get("rating", "UNKNOWN")
+        blocked = order_intent.get("blocked", False)
+        blocked_display = "[red]YES[/red]" if blocked else "[green]NO[/green]"
+        rating_display = f"[dim]{rating}[/dim]" if blocked else str(rating).upper()
 
         summary_table.add_row(
             symbol,
             f"{item['score']:.2f}",
             str(item.get("signal", "unknown")).upper(),
-            str(decision).upper(),
+            rating_display,
+            blocked_display,
         )
 
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_path = Path.cwd() / "reports" / f"{symbol}_{timestamp}"
-        save_report_to_disk(final_state, symbol, save_path)
+        final_state = sym_result.get("final_state")
+        if final_state:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = Path.cwd() / "reports" / f"{symbol}_{timestamp}"
+            save_report_to_disk(final_state, symbol, save_path)
 
     console.print("\n")
     console.print(summary_table)
@@ -1050,7 +1060,11 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(refresh_quant_cache: bool = False, quant_cache_ttl_days: int = 1):
+def run_analysis(
+    refresh_quant_cache: bool = False,
+    quant_cache_ttl_days: int = 1,
+    execution_mode: str = "llm_assisted",
+):
     # First get all user selections
     selections = get_user_selections()
 
@@ -1067,6 +1081,12 @@ def run_analysis(refresh_quant_cache: bool = False, quant_cache_ttl_days: int = 
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
+    normalized_mode = parse_execution_mode(execution_mode)
+    if normalized_mode != execution_mode.strip().lower():
+        console.print(
+            f"[yellow]Warning: unknown execution_mode '{execution_mode}', defaulting to '{normalized_mode}'[/yellow]"
+        )
+    config["execution_mode"] = normalized_mode
     config["quant_prefilter_refresh_cache"] = refresh_quant_cache
     config["quant_prefilter_cache_ttl_days"] = quant_cache_ttl_days
 
@@ -1287,7 +1307,11 @@ def run_analysis(refresh_quant_cache: bool = False, quant_cache_ttl_days: int = 
 
         # Get final state and decision
         final_state = trace[-1]
-        decision = graph.process_signal(final_state["final_trade_decision"])
+        decision = graph.build_order_intent(
+            selections["ticker"],
+            selections["analysis_date"],
+            final_state["final_trade_decision"],
+        )["rating"]
 
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
@@ -1332,6 +1356,11 @@ def run_analysis(refresh_quant_cache: bool = False, quant_cache_ttl_days: int = 
 
 @app.command()
 def analyze(
+    execution_mode: str = typer.Option(
+        "llm_assisted",
+        "--execution-mode",
+        help="Execution mode: llm_assisted or quant_strict.",
+    ),
     refresh_quant_cache: bool = typer.Option(
         False,
         "--refresh-quant-cache",
@@ -1344,6 +1373,7 @@ def analyze(
     ),
 ):
     run_analysis(
+        execution_mode=execution_mode,
         refresh_quant_cache=refresh_quant_cache,
         quant_cache_ttl_days=quant_cache_ttl_days,
     )
