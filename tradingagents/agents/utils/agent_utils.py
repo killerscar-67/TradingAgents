@@ -7,6 +7,9 @@ from tradingagents.agents.utils.core_stock_tools import (
 from tradingagents.agents.utils.technical_indicators_tools import (
     get_indicators
 )
+from tradingagents.agents.utils.quant_tools import (
+    get_quant_signals
+)
 from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
     get_balance_sheet,

@@ -24,6 +24,7 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
+    get_quant_signals,
     get_fundamentals,
     get_balance_sheet,
     get_cashflow,
@@ -38,6 +39,7 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+from .prefilter import score_tickers_with_quant
 
 
 class TradingAgentsGraph:
@@ -162,6 +164,7 @@ class TradingAgentsGraph:
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
+                    get_quant_signals,
                 ]
             ),
             "social": ToolNode(
@@ -285,3 +288,65 @@ class TradingAgentsGraph:
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)
+
+    def rank_tickers_with_quant(
+        self,
+        tickers: List[str],
+        trade_date: str,
+        top_n: int = 10,
+        quant_kwargs: Optional[Dict[str, Any]] = None,
+        cache_dir: Optional[str] = None,
+        cache_ttl_days: Optional[int] = None,
+        refresh_cache: Optional[bool] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Rank a ticker universe with quant signals and choose top-N candidates."""
+        cache_root = cache_dir or os.path.join(self.config["data_cache_dir"], "quant_prefilter")
+        if cache_ttl_days is None:
+            cache_ttl_days = self.config.get("quant_prefilter_cache_ttl_days", 1)
+        if refresh_cache is None:
+            refresh_cache = bool(self.config.get("quant_prefilter_refresh_cache", False))
+        return score_tickers_with_quant(
+            tickers=tickers,
+            trade_date=trade_date,
+            top_n=top_n,
+            quant_kwargs=quant_kwargs,
+            cache_dir=cache_root,
+            cache_ttl_days=cache_ttl_days,
+            refresh_cache=refresh_cache,
+        )
+
+    def propagate_prefiltered_universe(
+        self,
+        tickers: List[str],
+        trade_date: str,
+        top_n: int = 10,
+        quant_kwargs: Optional[Dict[str, Any]] = None,
+        cache_dir: Optional[str] = None,
+        cache_ttl_days: Optional[int] = None,
+        refresh_cache: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Run quant-first filtering, then analyze only selected symbols via the LLM graph."""
+        prefilter = self.rank_tickers_with_quant(
+            tickers=tickers,
+            trade_date=trade_date,
+            top_n=top_n,
+            quant_kwargs=quant_kwargs,
+            cache_dir=cache_dir,
+            cache_ttl_days=cache_ttl_days,
+            refresh_cache=refresh_cache,
+        )
+
+        analysis = {}
+        for item in prefilter["selected"]:
+            symbol = item["symbol"]
+            final_state, decision = self.propagate(symbol, trade_date)
+            analysis[symbol] = {
+                "quant": item,
+                "decision": decision,
+                "final_state": final_state,
+            }
+
+        return {
+            "prefilter": prefilter,
+            "analysis": analysis,
+        }
