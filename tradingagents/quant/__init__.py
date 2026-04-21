@@ -1,21 +1,35 @@
 from .contracts import (
+    EntryEngine,
+    EntrySignal,
     ExecutionMode,
+    NoSignal,
     OrderIntentContract,
     QuantSignalContract,
     QuantSignalLabel,
+    RegimeContract,
+    RegimeLabel,
     TradeRating,
+    ValidationResult,
     parse_execution_mode,
     rating_from_quant_signal,
     rating_from_text,
 )
+from .engine import run_quant_engine
 
 __all__ = [
+    "EntryEngine",
+    "EntrySignal",
     "ExecutionMode",
+    "NoSignal",
     "OrderIntentContract",
     "QuantSignalContract",
     "QuantSignalLabel",
+    "RegimeContract",
+    "RegimeLabel",
     "TradeRating",
+    "ValidationResult",
     "parse_execution_mode",
     "rating_from_quant_signal",
     "rating_from_text",
+    "run_quant_engine",
 ]

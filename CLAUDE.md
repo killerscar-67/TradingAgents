@@ -70,6 +70,9 @@ Key config fields:
 - `execution_mode` — `"llm_assisted"` or `"quant_strict"`
 - `max_debate_rounds`, `max_risk_discuss_rounds` — agent debate depth
 - `quant_prefilter_cache_ttl_days`, `quant_prefilter_refresh_cache` — cache controls
+- `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` — Phase 1 intraday data
+- `entry_mode` — `"auto"` (regime-driven), `"breakout"`, or `"mean_reversion"` to force engine
+- `validation_momentum/squeeze/sr_proximity` — toggle individual Phase 2 validation filters
 - `output_language` — language for analyst reports (internal debate always English)
 
 ### Phase-based Development

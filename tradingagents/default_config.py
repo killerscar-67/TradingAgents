@@ -46,6 +46,43 @@ DEFAULT_CONFIG = {
     ),
     "intraday_default_session": os.getenv("TRADINGAGENTS_INTRADAY_SESSION", "regular"),
     "intraday_refresh_cache": False,
+    # Quant engine (Phase 2) — regime classifier
+    "adx_period": 14,
+    "atr_period": 14,
+    "bb_period": 20,
+    "adx_trending_threshold": 25.0,
+    "adx_ranging_threshold": 20.0,
+    "min_atr_pct": 0.001,
+    "min_volume": 100_000,
+    "htf_sma_period": 20,
+    "htf_bias_neutral_pct": 0.005,
+    # Quant engine (Phase 2) — breakout entry
+    "breakout_lookback": 20,
+    "breakout_volume_factor": 1.5,
+    # Quant engine (Phase 2) — mean reversion entry
+    "rsi_period": 14,
+    "rsi_oversold": 30.0,
+    "rsi_overbought": 70.0,
+    "mr_sma_period": 20,
+    "mr_stretch_std": 2.0,
+    "mr_min_stretch_pct": 0.01,
+    # Quant engine (Phase 2) — validation filters (set False to disable)
+    "validation_momentum": True,
+    "validation_squeeze": True,
+    "validation_sr_proximity": True,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal_period": 9,
+    "bb_std": 2.0,
+    "kc_period": 20,
+    "kc_atr_factor": 1.5,
+    "kc_atr_period": 14,
+    "sr_lookback": 50,
+    "sr_swing_width": 5,
+    "sr_proximity_pct": 0.005,
+    # Quant engine (Phase 2) — engine dispatch override
+    # "auto" uses regime-based dispatch; "breakout" or "mean_reversion" forces engine
+    "entry_mode": "auto",
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {

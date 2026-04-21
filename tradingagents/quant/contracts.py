@@ -2,7 +2,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 ExecutionMode = Literal["llm_assisted", "quant_strict"]
 
@@ -117,6 +117,77 @@ class OrderIntentContract:
         payload = asdict(self)
         payload["rating"] = self.rating.value
         return payload
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Regime / Entry / Validation contracts
+# ---------------------------------------------------------------------------
+
+class RegimeLabel(str, Enum):
+    TRENDING = "trending"
+    RANGING = "ranging"
+    CONSOLIDATION = "consolidation"
+
+
+class EntryEngine(str, Enum):
+    BREAKOUT = "breakout"
+    MEAN_REVERSION = "mean_reversion"
+
+
+@dataclass(frozen=True)
+class RegimeContract:
+    """Output of the regime classifier."""
+    label: RegimeLabel
+    tradable: bool
+    adx: float
+    atr: float
+    atr_pct: float
+    htf_bias: Literal["bullish", "bearish", "neutral"]
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["label"] = self.label.value
+        return payload
+
+
+@dataclass(frozen=True)
+class EntrySignal:
+    """A confirmed entry opportunity from one of the entry engines."""
+    engine: EntryEngine
+    direction: Literal["long", "short"]
+    strength: float      # 0.0–1.0
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload = asdict(self)
+        payload["engine"] = self.engine.value
+        return payload
+
+
+@dataclass(frozen=True)
+class NoSignal:
+    """Explicit sentinel returned when no entry condition is met."""
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"signal": "none", "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Aggregated output of all validation filters."""
+    passed: bool
+    filters_passed: int
+    filters_total: int
+    reasons: Tuple[str, ...]   # tuple so the dataclass stays frozen/hashable
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "filters_passed": self.filters_passed,
+            "filters_total": self.filters_total,
+            "reasons": list(self.reasons),
+        }
 
 
 def parse_execution_mode(value: Optional[str]) -> ExecutionMode:
