@@ -69,9 +69,9 @@ All configuration lives in `DEFAULT_CONFIG` in default_config.py. Override by pa
 
 | Key | Default | Env override | Description |
 |---|---|---|---|
-| `llm_provider` | `"openai"` | — | LLM provider: `openai`, `anthropic`, `google`, `xai`, `deepseek`, `qwen`, `glm`, `ollama`, `openrouter`, `azure` |
-| `deep_think_llm` | `"gpt-5.4"` | — | Model for complex reasoning tasks |
-| `quick_think_llm` | `"gpt-5.4-mini"` | — | Model for quick tasks and extraction |
+| `llm_provider` | `"openai"` | `TRADINGAGENTS_LLM_PROVIDER` | LLM provider: `openai`, `anthropic`, `google`, `xai`, `deepseek`, `qwen`, `glm`, `ollama`, `openrouter`, `azure` |
+| `deep_think_llm` | `"gpt-5.4"` | `TRADINGAGENTS_DEEP_THINK_LLM` | Model for complex reasoning tasks |
+| `quick_think_llm` | `"gpt-5.4-mini"` | `TRADINGAGENTS_QUICK_THINK_LLM` | Model for quick tasks and extraction |
 | `execution_mode` | `"llm_assisted"` | `TRADINGAGENTS_EXECUTION_MODE` | `"llm_assisted"` or `"quant_strict"` |
 | `output_language` | `"English"` | — | Language for analyst reports; internal debate always English |
 | `max_debate_rounds` | `1` | — | Researcher debate rounds |
@@ -448,8 +448,10 @@ All contracts expose a `.to_dict()` method for serialisation.
 | `ZHIPU_API_KEY` | GLM (Zhipu) |
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage market data |
+| `TRADINGAGENTS_LLM_PROVIDER` | LLM provider override |
+| `TRADINGAGENTS_DEEP_THINK_LLM` | Deep-think model override |
+| `TRADINGAGENTS_QUICK_THINK_LLM` | Quick-think model override |
 | `TRADINGAGENTS_EXECUTION_MODE` | `llm_assisted` or `quant_strict` |
-| `TRADINGAGENTS_EXECUTION_MODE` | Execution mode override |
 | `TRADINGAGENTS_RESULTS_DIR` | Override results log path |
 | `TRADINGAGENTS_CACHE_DIR` | Override quant prefilter cache path |
 | `TRADINGAGENTS_INTRADAY_CACHE_DIR` | Override intraday bar cache path |
