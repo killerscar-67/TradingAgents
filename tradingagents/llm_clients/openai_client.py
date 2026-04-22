@@ -1,7 +1,10 @@
 import os
+import warnings
 from typing import Any, Optional
 
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
+from openai import APIConnectionError
 
 from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
@@ -16,7 +19,22 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        try:
+            return normalize_content(super().invoke(input, config, **kwargs))
+        except APIConnectionError as exc:
+            warnings.warn(
+                f"LLM provider connection error; returning conservative HOLD fallback: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return AIMessage(
+                content=(
+                    "HOLD\n\n"
+                    "LLM provider connection error. No live model response was "
+                    "available, so this is a conservative fallback rather than "
+                    "an analysis-derived recommendation."
+                )
+            )
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
