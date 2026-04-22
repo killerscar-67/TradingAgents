@@ -48,6 +48,12 @@ TL;DR: keep the current quant prefilter and caching as the front gate, then buil
 3. Promote to live only after performance and reliability thresholds are met.
 4. Depends on phases 2 through 4.
 
+8. Phase 7: Conversational trade-review consultant — **Agent: Codex**
+1. Add a conversation-only review assistant that can answer questions about a completed or proposed trade using the existing context, support annotations, fills, and portfolio state.
+2. Return structured advisory responses for rationale review, risk critique, post-trade learning, and follow-up questions.
+3. Preserve the support-only boundary: consultant output cannot create, block, size, modify, or submit orders.
+4. Depends on phases 4 and 5; can run after validation gates if the paper-trading workflow needs conversation over replay results.
+
 **Handoff Protocol**
 
 The agent completing each phase MUST produce a handoff note at `docs/handoffs/phase-<N>.md` before the reviewer starts. This replaces the need for any agent to read full source to get context. Format:
@@ -87,6 +93,7 @@ Reviewer reads only the handoff note + the diff (via `git diff main...phase/<N>`
 - [tradingagents/graph/signal_processing.py](tradingagents/graph/signal_processing.py) — non-execution use only in strict mode.
 - [tradingagents/agents/utils/quant_tools.py](tradingagents/agents/utils/quant_tools.py) — wrapper over deterministic quant modules.
 - [tradingagents/dataflows/interface.py](tradingagents/dataflows/interface.py) — route intraday fetch calls.
+- [tradingagents/agents/utils/llm_support.py](tradingagents/agents/utils/llm_support.py) — support-only LLM annotations and conversational trade-review consultant.
 - [tests/test_quant_tool.py](tests/test_quant_tool.py) — evolve for new quant boundaries.
 - [tests/test_quant_prefilter.py](tests/test_quant_prefilter.py) — retain cache TTL/refresh guarantees.
 
@@ -96,6 +103,7 @@ Reviewer reads only the handoff note + the diff (via `git diff main...phase/<N>`
 3. Integration test: prefilter → quant signal → risk gate → order intent.
 4. Replay simulation with friction for 15m and 4h.
 5. Paper execution lifecycle and portfolio reconciliation tests.
+6. Conversation safety test: trade-review consultant cannot emit executable order mutations or non-binary risk controls.
 
 **Code Review Allocation**
 
@@ -108,6 +116,7 @@ Reviewer reads only the handoff note + the diff (via `git diff main...phase/<N>`
 | 4 — Broker + order manager | Codex | Claude Code | Order lifecycle has subtle state-machine correctness issues |
 | 5 — LLM support modules | Codex | Copilot | Verify outputs are truly non-blocking and match Phase 0 annotation contracts |
 | 6 — Backtest + paper gate | Claude Code | Codex | Codex spots simulation bias (lookahead, data leakage) as second perspective |
+| 7 — Conversational trade review | Codex | Copilot | Verify consultant responses remain advisory, context-grounded, and disconnected from order execution |
 
 Cross-cutting rule: any phase touching `trading_graph.py`, `prefilter.py`, or `default_config.py` — Copilot reviews regardless.
 
@@ -141,6 +150,7 @@ Automation limits: Copilot review is best done interactively in VS Code rather t
 | 4 | Claude Code | Order state machine completeness, idempotency of submit/cancel/fill operations, pre-trade guard ordering, paper adapter faithfully models slippage |
 | 5 | Copilot | LLM output never reaches order path, structured output parsing is safe against malformed responses, anomaly flags are binary with no ambiguity |
 | 6 | Codex | No lookahead bias (no future bar data accessible), commission and slippage modeling is realistic, walk-forward windows have no leakage between folds |
+| 7 | Copilot | Conversation output is advisory only, uses provided trade context, safely handles prompt injection/malformed responses, and cannot mutate order intent or portfolio state |
 
 **Acceptance Criteria**
 
@@ -159,12 +169,14 @@ Per-phase acceptance criteria:
 - Phase 4: Paper adapter fills at next-bar open with configured slippage; order manager reconciles fills without duplication; portfolio state matches sum of all fills.
 - Phase 5: Pre-trade brief and attribution are fire-and-forget; anomaly watcher emits `bool` flag only; none of the three modules can block or modify an order.
 - Phase 6: Backtest equity curve matches manual spot-check on 3 known trades; walk-forward out-of-sample Sharpe > 0 on 80% of folds; paper gate runs without error for full 2-week window.
+- Phase 7: Trade-review consultant answers follow-up questions from supplied trade context; responses are structured, advisory, and unable to change order intent, risk gates, fills, or portfolio state.
 
 **Decisions**
 - Included:
 1. 15m-4h strict quant execution.
 2. LLM support-only for daytrade.
 3. Parameter-exposed architecture for optimization.
+4. Conversational trade-review consultant for research, journaling, and post-trade learning.
 - Excluded:
 1. Swing-lane implementation for now.
 2. LLM-driven order decisions.
