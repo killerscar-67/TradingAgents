@@ -24,9 +24,11 @@ __all__ = [
     "AnomalyWatch",
     "PostTradeAttribution",
     "PreTradeBrief",
+    "TradeReviewResponse",
     "annotate_order_intent_with_support",
     "build_post_trade_attribution",
     "build_pre_trade_brief",
+    "chat_trade_review",
     "watch_anomalies",
 ]
 
@@ -78,6 +80,26 @@ class PostTradeAttribution:
         payload["factors"] = list(self.factors)
         payload["lessons"] = list(self.lessons)
         return payload
+
+
+@dataclass(frozen=True)
+class TradeReviewResponse:
+    answer: str = ""
+    observations: Tuple[str, ...] = ()
+    follow_up_questions: Tuple[str, ...] = ()
+    referenced_context_keys: Tuple[str, ...] = ()
+    blocking: bool = False
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "answer": self.answer,
+            "observations": list(self.observations),
+            "follow_up_questions": list(self.follow_up_questions),
+            "referenced_context_keys": list(self.referenced_context_keys),
+            "blocking": self.blocking,
+            "error": self.error,
+        }
 
 
 def build_pre_trade_brief(llm: Any, context: Mapping[str, Any]) -> PreTradeBrief:
@@ -136,6 +158,30 @@ def build_post_trade_attribution(llm: Any, context: Mapping[str, Any]) -> PostTr
     )
 
 
+def chat_trade_review(
+    llm: Any,
+    context: Mapping[str, Any],
+    messages: Any,
+) -> TradeReviewResponse:
+    """Answer trade-review questions without producing executable fields."""
+    payload, error = _invoke_json_with_prompt(
+        llm,
+        _build_trade_review_prompt(context, messages),
+    )
+    if error:
+        return TradeReviewResponse(error=error)
+
+    return TradeReviewResponse(
+        answer=str(payload.get("answer", "")),
+        observations=_string_tuple(payload.get("observations")),
+        follow_up_questions=_string_tuple(payload.get("follow_up_questions")),
+        referenced_context_keys=_referenced_context_keys(
+            payload.get("referenced_context_keys"),
+            context,
+        ),
+    )
+
+
 def annotate_order_intent_with_support(
     order_intent: Mapping[str, Any],
     *,
@@ -156,7 +202,10 @@ def annotate_order_intent_with_support(
 
 
 def _invoke_json(llm: Any, task: str, context: Mapping[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
-    prompt = _build_prompt(task, context)
+    return _invoke_json_with_prompt(llm, _build_prompt(task, context))
+
+
+def _invoke_json_with_prompt(llm: Any, prompt: str) -> Tuple[Dict[str, Any], Optional[str]]:
     try:
         response = llm.invoke(prompt)
     except Exception as exc:
@@ -174,6 +223,18 @@ def _invoke_json(llm: Any, task: str, context: Mapping[str, Any]) -> Tuple[Dict[
     return payload, None
 
 
+def _build_trade_review_prompt(context: Mapping[str, Any], messages: Any) -> str:
+    return (
+        "Task: conversation_trade_review\n"
+        "Advisory only. Return one JSON object with only these keys: "
+        "answer, observations, follow_up_questions, referenced_context_keys. "
+        "Do not create, block, size, modify, cancel, or submit orders. "
+        "Do not modify risk gates, fills, or portfolio state.\n"
+        f"Context: {json.dumps(dict(context), sort_keys=True, default=str)}\n"
+        f"Messages: {json.dumps(_normalise_messages(messages), sort_keys=True, default=str)}"
+    )
+
+
 def _build_prompt(task: str, context: Mapping[str, Any]) -> str:
     return (
         f"Task: {task}\n"
@@ -186,6 +247,33 @@ def _string_tuple(value: Any) -> Tuple[str, ...]:
     if not isinstance(value, list):
         return ()
     return tuple(str(item) for item in value if item is not None and str(item))
+
+
+def _referenced_context_keys(value: Any, context: Mapping[str, Any]) -> Tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    allowed = set(str(key) for key in context.keys())
+    keys = []
+    for item in value:
+        key = str(item)
+        if key in allowed and key not in keys:
+            keys.append(key)
+    return tuple(keys)
+
+
+def _normalise_messages(messages: Any) -> Tuple[Dict[str, str], ...]:
+    if not isinstance(messages, list):
+        return ({"role": "user", "content": str(messages)},)
+    normalised = []
+    for message in messages:
+        if isinstance(message, Mapping):
+            role = str(message.get("role", "user"))
+            content = str(message.get("content", ""))
+        else:
+            role = "user"
+            content = str(message)
+        normalised.append({"role": role, "content": content})
+    return tuple(normalised)
 
 
 def _empty_flags() -> Dict[str, bool]:

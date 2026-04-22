@@ -1,3 +1,6 @@
+from .backtest import BacktestResult, BacktestTrade, run_backtest
+from .walkforward import WalkForwardFold, WalkForwardResult, run_walk_forward
+from .paper_gate import PaperGate, PaperGateResult
 from .contracts import (
     DailyLossState,
     EntryEngine,
@@ -37,6 +40,14 @@ from .risk import (
 )
 
 __all__ = [
+    "BacktestResult",
+    "BacktestTrade",
+    "run_backtest",
+    "WalkForwardFold",
+    "WalkForwardResult",
+    "run_walk_forward",
+    "PaperGate",
+    "PaperGateResult",
     "DailyLossState",
     "EntryEngine",
     "EntrySignal",

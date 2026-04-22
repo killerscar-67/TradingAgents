@@ -1,0 +1,121 @@
+# Phase 6 Handoff — Validation Gates
+Agent: Claude Code
+Date: 2026-04-22
+
+## What was built
+
+- `tradingagents/quant/backtest.py`: Bar-replay backtest engine with strict no-lookahead bar slicing.
+    - `run_backtest(symbol, bars_15m, bars_4h, initial_equity, config) -> BacktestResult`
+    - `BacktestTrade`: frozen dataclass recording a completed round-trip (entry + exit fill prices, gross/net P&L, exit reason).
+    - `BacktestResult`: dataclass with equity curve, trade list, Sharpe, max drawdown, win rate.
+    - `_compute_sharpe(equity_curve, bars_per_day)`: annualised Sharpe from bar-level equity curve.
+    - `_compute_max_drawdown(equity_curve)`: peak-to-trough max drawdown fraction.
+
+- `tradingagents/quant/walkforward.py`: Walk-forward validation with rolling fixed-width IS/OOS folds.
+    - `run_walk_forward(symbol, bars_15m, bars_4h, n_folds, in_sample_ratio, initial_equity, config) -> WalkForwardResult`
+    - `WalkForwardFold`: per-fold IS/OOS bar index ranges, IS and OOS Sharpe ratios.
+    - `WalkForwardResult`: all folds, `oos_sharpe_positive_pct`, `mean_oos_sharpe`.
+
+- `tradingagents/quant/paper_gate.py`: Pass/fail evaluation of paper-session results.
+    - `PaperGate(min_session_sharpe, max_intraday_drawdown_pct, min_trades)` — configurable thresholds.
+    - `PaperGate.evaluate(result: BacktestResult) -> PaperGateResult`
+    - `PaperGateResult`: frozen dataclass with `passed`, all metric fields, and `reasons` tuple.
+
+- `tradingagents/quant/__init__.py`: exported `BacktestResult`, `BacktestTrade`, `run_backtest`, `WalkForwardFold`, `WalkForwardResult`, `run_walk_forward`, `PaperGate`, `PaperGateResult`.
+
+- `tradingagents/default_config.py`: added Phase 6 config keys (see below).
+
+- `tests/test_backtest.py`: 41 Phase 6 tests covering:
+    - Metric helpers (Sharpe, drawdown)
+    - Backtest mechanics (mocked engine): equity initialisation, fill-at-next-bar, slippage, commission arithmetic, stop exit, signal reversal, end-of-data exit, determinism, equity curve length
+    - Three known-trade spot-checks (P&L arithmetic for long win, short win, commission round-trip)
+    - No-lookahead verification (bar count and 4h timestamp guards)
+    - Walk-forward fold adjacency, OOS disjointness, Sharpe-positive-pct computation, invalid-arg rejection
+    - Paper gate pass/fail for all threshold combinations and field accuracy
+    - Integration smoke tests (real engine, synthetic data)
+
+## No-lookahead guarantee
+
+At signal bar `i` the engine receives exactly:
+- `bars_15m.iloc[:i+1]` — history up to and including the current bar
+- `bars_4h.loc[bars_4h.index <= bars_15m.index[i]]` — 4h bars whose timestamp ≤ current 15m bar
+
+Fills execute at bar `i+1`'s open (not bar `i`'s close). This is enforced structurally: the signal is generated at the end of iteration `i`, the fill is applied at the start of iteration `i+1`.
+
+## Friction model
+
+- **Slippage**: `fill_price = next_bar_open × (1 + slippage_pct)` for buys; `× (1 − slippage_pct)` for sells.
+- **Commission**: flat dollar per order, deducted at entry and again at exit. `BacktestTrade.commission` = `2 × commission_per_order` for normal exits; `1 × commission_per_order` for end-of-data (no exit order is placed). `net_pnl = gross_pnl − commission`.
+
+## Walk-forward fold layout
+
+```
+fold_size = total_bars // n_folds
+is_size   = max(1, int(fold_size × in_sample_ratio))
+oos_size  = fold_size − is_size
+
+Fold k:  IS  = [k×fold_size,          k×fold_size + is_size)
+         OOS = [k×fold_size + is_size, (k+1)×fold_size)
+```
+
+IS and OOS are adjacent (`IS_end == OOS_start`) and no bar appears in more than one fold's OOS window.
+
+## Contracts exposed to next phase
+
+- `run_backtest(...) -> BacktestResult` — deterministic for identical inputs; equity curve has exactly `len(bars_15m)` entries.
+- `PaperGate.evaluate(BacktestResult) -> PaperGateResult` — `passed=True` only when Sharpe > threshold, drawdown < limit, and trade_count ≥ min_trades.
+- `run_walk_forward(...) -> WalkForwardResult` — `oos_sharpe_positive_pct` is the fraction of folds where OOS Sharpe > 0.
+
+## Config keys added
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `backtest_warmup_bars` | int | 60 | Minimum bars before engine is queried in replay |
+| `backtest_slippage_pct` | float | 0.0005 | One-way slippage fraction per fill |
+| `backtest_commission` | float | 1.0 | Flat dollar commission per order |
+| `bars_per_day` | int | 26 | 15m bars per trading day (Sharpe annualisation) |
+| `min_4h_bars` | int | 30 | Minimum visible 4h bars before signal generation |
+| `walkforward_n_folds` | int | 5 | Default number of walk-forward folds |
+| `walkforward_in_sample_ratio` | float | 0.7 | Fraction of each fold used as IS |
+| `paper_gate_min_sharpe` | float | 0.5 | Minimum session Sharpe for promotion |
+| `paper_gate_max_drawdown_pct` | float | 0.05 | Maximum drawdown fraction for promotion |
+| `paper_gate_min_trades` | int | 1 | Minimum trades for a PASS verdict |
+
+## Test commands
+
+```bash
+# Phase 6 tests
+tradingagent_venv/bin/python -m unittest tests.test_backtest -v
+# Expected: 41 tests, all OK
+
+# Required regression suite
+tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
+# Expected: 15 tests, all OK
+```
+
+## Known limitations / deferred decisions
+
+- `run_backtest` uses the full quant engine pipeline (regime → entry → validation) for each bar at warmup cost O(n × warmup). For long histories, consider caching indicator state.
+- Position management is one-at-a-time: no pyramiding, no multi-leg exits. Partial fills, bracket orders, OCO, and trailing stop management are deferred.
+- Walk-forward uses rolling fixed-width folds (not expanding/anchored). Expanding-window walk-forward is deferred.
+- The paper gate operates on a completed `BacktestResult`. Live paper-session streaming (accumulating fills bar-by-bar over 2 weeks) is deferred to Phase 7 or a live wiring layer.
+- Sharpe annualisation assumes uniform bar timing (`bars_per_day=26`). Sessions with gaps (holidays, overnight) are not corrected for in the annualisation factor.
+- End-of-data exits pay only entry commission (no exit order is placed); this slightly overstates net_pnl for EOD positions.
+
+## What the reviewer must focus on
+
+- Verify no future bar data is reachable from any engine call: `visible_15m` must satisfy `len(visible_15m) == i + 1` for call at bar `i`.
+- Verify commission and slippage are deducted on both sides of every closed trade (except end-of-data exits).
+- Verify `WalkForwardFold.is_end == WalkForwardFold.oos_start` for every fold and that OOS windows are disjoint.
+- Verify `PaperGateResult.passed` is `False` when any single threshold is exactly at (not strictly better than) the limit.
+- Verify `BacktestResult.equity_curve` has exactly `len(bars_15m)` entries and first entry equals `initial_equity` when no position opens on bar 0.
+
+## Fix notes
+
+- 2026-04-22: Addressed `reviews/phase-6-review.md`.
+    - MEDIUM M-1: `BacktestTrade.net_pnl` for EOD exits now records `round(gross - commission, 6)` to match the actual equity deduction path. `BacktestTrade.commission` field retained as `1 × commission_per_order` (entry only).
+    - MEDIUM M-2: `oos_4h` in `run_walk_forward` now includes all 4h bars up to `bars_15m.index[oos_end - 1]` (full history tail). OOS `run_backtest` receives HTF context from bar 1; the backtest's own no-lookahead slice (`bars_4h.index <= current_15m_ts`) prevents any future 4h data from leaking into the signal.
+    - LOW L-1: `_empty_result` now accepts `n_bars` parameter and returns `equity_curve = tuple([initial_equity] * n_bars)`, satisfying `len(equity_curve) == len(bars_15m)` for all inputs including `n_bars == 0` and `n_bars == 1`.
+    - Validation: `tradingagent_venv/bin/python -m unittest tests.test_backtest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v` → 58 tests OK
+- 2026-04-22T13:36:44+0800 -> docs/handoffs/history/phase-6/fix-notes-20260422_133644-cf3ce9a.md
+- 2026-04-22T13:32:36+0800 -> docs/handoffs/history/phase-6/fix-notes-20260422_133236-cf3ce9a.md

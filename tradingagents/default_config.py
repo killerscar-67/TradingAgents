@@ -100,6 +100,27 @@ DEFAULT_CONFIG = {
     "max_daily_loss_pct": 0.02,
     # Kill switch: permanently halt orders for the day when breached
     "kill_switch_daily_loss_pct": 0.03,
+    # Backtest and walk-forward (Phase 6)
+    # Number of warmup bars before the engine is queried in bar-replay
+    "backtest_warmup_bars": 60,
+    # One-way slippage fraction applied to fill prices (0.05%)
+    "backtest_slippage_pct": 0.0005,
+    # Flat dollar commission per order (paid at entry and again at exit)
+    "backtest_commission": 1.0,
+    # 15-minute bars per trading day for Sharpe annualisation (6.5 h × 4)
+    "bars_per_day": 26,
+    # Minimum 4h bars required before the engine generates signals
+    "min_4h_bars": 30,
+    # Walk-forward: number of IS/OOS folds
+    "walkforward_n_folds": 5,
+    # Walk-forward: fraction of each fold used as in-sample
+    "walkforward_in_sample_ratio": 0.7,
+    # Paper gate: minimum annualised Sharpe required for promotion
+    "paper_gate_min_sharpe": 0.5,
+    # Paper gate: maximum peak-to-trough drawdown fraction allowed
+    "paper_gate_max_drawdown_pct": 0.05,
+    # Paper gate: minimum completed trades required for a PASS verdict
+    "paper_gate_min_trades": 1,
     # Execution guards (Phase 4)
     # Reject orders larger than this fraction of the latest bar volume
     "max_order_volume_pct": 0.01,
