@@ -54,6 +54,81 @@ TL;DR: keep the current quant prefilter and caching as the front gate, then buil
 3. Preserve the support-only boundary: consultant output cannot create, block, size, modify, or submit orders.
 4. Depends on phases 4 and 5; can run after validation gates if the paper-trading workflow needs conversation over replay results.
 
+9. Phase 8: Quant merge and token optimization — **Agents: Codex + Claude Code + Copilot**
+1. Merge overlapping quant and original TradingAgents responsibilities so quant owns executable trading facts and agents own interpretation/explanation.
+2. Implement in order: quant merge, risk/backtest/tool-output merge, then compact context/token optimization.
+3. Use the Phase 8 coordination section in this file as the source of truth before implementation. Do not create `docs/handoffs/phase-8.md` until Phase 8 implementation is complete and ready for review.
+4. Depends on phases 0 through 7.
+
+**Phase 8 Coordination — Quant Merge And Token Optimization**
+
+Goal: merge overlapping quant and legacy TradingAgents responsibilities first, then reduce agent token usage on top of the cleaner flow. Quant owns executable trading facts; agents own interpretation and explanation.
+
+Merge order:
+
+1. Quant merge.
+2. Risk/backtest/tool-output merge.
+3. Compact context/token optimization.
+
+Phase 8 code changes should not start until `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, and this Phase 8 section are present in the branch.
+
+| Agent | Lane | Owned files | Focused tests |
+|---|---|---|---|
+| Codex | Quant executable layer | `tradingagents/quant/contracts.py`, `tradingagents/quant/engine.py`, `tradingagents/agents/utils/quant_tools.py`, `tradingagents/graph/trading_graph.py`, `tradingagents/graph/signal_processing.py` | `tests/test_execution_contracts.py`, `tests/test_quant_tool.py` |
+| Claude Code | Agent context and prompt layer | `tradingagents/agents/utils/agent_states.py`, `tradingagents/agents/utils/agent_utils.py`, `tradingagents/agents/researchers/`, `tradingagents/agents/trader/`, `tradingagents/agents/risk_mgmt/`, `tradingagents/agents/managers/portfolio_manager.py` | compact-context graph/unit tests |
+| Copilot | Risk reuse, tool output, telemetry | `tradingagents/quant/risk.py`, `tradingagents/quant/backtest.py`, `tradingagents/quant/execution.py`, `tradingagents/dataflows/y_finance.py`, `tradingagents/dataflows/yfinance_news.py`, `cli/stats_handler.py`, `cli/main.py` | `tests/test_backtest.py`, `tests/test_risk.py`, `tests/test_execution.py` |
+
+Required reading:
+
+- Codex reads first: `tradingagents/quant/contracts.py`, `tradingagents/quant/engine.py`, `tradingagents/agents/utils/quant_tools.py`, `tradingagents/graph/trading_graph.py`, `tradingagents/graph/signal_processing.py`, `tests/test_execution_contracts.py`, and `tests/test_quant_tool.py`.
+- Claude Code reads first: `tradingagents/agents/utils/agent_states.py`, `tradingagents/agents/utils/agent_utils.py`, `tradingagents/agents/researchers/bull_researcher.py`, `tradingagents/agents/researchers/bear_researcher.py`, `tradingagents/agents/trader/trader.py`, `tradingagents/agents/risk_mgmt/aggressive_debator.py`, `tradingagents/agents/risk_mgmt/conservative_debator.py`, `tradingagents/agents/risk_mgmt/neutral_debator.py`, and `tradingagents/agents/managers/portfolio_manager.py`.
+- Copilot reads first: `tradingagents/quant/risk.py`, `tradingagents/quant/backtest.py`, `tradingagents/quant/execution.py`, `tradingagents/dataflows/y_finance.py`, `tradingagents/dataflows/yfinance_news.py`, `cli/stats_handler.py`, `cli/main.py`, `tests/test_backtest.py`, `tests/test_risk.py`, and `tests/test_execution.py`.
+
+Acceptance criteria:
+
+- `get_quant_signals` emits `QuantSignalContract`-compatible payloads and uses `run_quant_engine` when intraday bars are available.
+- The old MA/RSI signal path is retained only as an explicit fallback.
+- `Rating:` lines are parsed deterministically before any LLM extraction in `llm_assisted` mode.
+- `quant_strict` continues to avoid LLM calls for executable decisions.
+- Backtest sizing and stops reuse `tradingagents.quant.risk`.
+- Tool outputs are bounded by config-controlled caps.
+- Token telemetry preserves existing aggregate totals and adds per-agent/per-stage totals.
+- Downstream agents use compact `analysis_brief` context by default.
+- `context_mode="full"` preserves legacy full-report prompt behavior.
+- Fake LLMs are used for graph/unit tests unless the test targets provider adapters.
+
+Validation matrix:
+
+```bash
+# Codex focused validation
+tradingagent_venv/bin/python -m unittest tests.test_execution_contracts tests.test_quant_tool -v
+
+# Claude Code focused validation
+tradingagent_venv/bin/python -m unittest tests.test_compact_context -v
+
+# Copilot focused validation
+tradingagent_venv/bin/python -m unittest tests.test_backtest tests.test_risk tests.test_execution -v
+
+# Full regression validation
+tradingagent_venv/bin/python -m unittest discover tests -v
+```
+
+Conflict rules:
+
+- Do not edit another agent's owned files without updating this Phase 8 section first.
+- If a cross-lane change is unavoidable, document the reason here before implementation and run both agents' focused test sets.
+- Prefer additive compatibility over removal. Keep public graph return shapes and existing contracts stable unless a test and this plan explicitly cover the change.
+- Preserve exact ticker symbols and exchange suffixes in all prompt/context compaction work.
+- Never let LLM output set executable rating, quantity, stops, blocked status, or risk-gate results in `quant_strict`.
+
+Token-saving development rules:
+
+- Use `rg` before opening files and read focused line ranges.
+- Do not paste full reports, logs, generated JSON, or dataframe/CSV output into prompts.
+- Summarize findings and cite file paths.
+- Run focused tests before full test discovery.
+- Keep prompts compact; pass structured quant/risk context instead of repeated full prose where possible.
+
 **Handoff Protocol**
 
 The agent completing each phase MUST produce a handoff note at `docs/handoffs/phase-<N>.md` before the reviewer starts. This replaces the need for any agent to read full source to get context. Format:

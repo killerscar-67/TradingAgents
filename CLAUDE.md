@@ -95,3 +95,23 @@ scripts/add_fix_notes.sh 1 reviews/phase-1/review-YYYYMMDD_HHMMSS-<sha>.md "Re-r
 ```
 
 This command writes `docs/handoffs/history/phase-N/fix-notes-*.md` and updates `docs/handoffs/phase-N.md` under `## Fix notes` with a timestamped link.
+
+## Claude Code Phase 8 Scope
+
+Phase 8 work is coordinated through `plan-quantStrictDaytradeArchitecture.prompt.md` until implementation is complete and a real handoff is written. Claude Code owns compact agent context, prompt handoffs, and downstream agent token reduction. Read these files first and avoid broad exploration until a direct dependency requires it:
+
+- `tradingagents/agents/utils/agent_states.py`
+- `tradingagents/agents/utils/agent_utils.py`
+- `tradingagents/agents/researchers/bull_researcher.py`
+- `tradingagents/agents/researchers/bear_researcher.py`
+- `tradingagents/agents/trader/trader.py`
+- `tradingagents/agents/risk_mgmt/aggressive_debator.py`
+- `tradingagents/agents/risk_mgmt/conservative_debator.py`
+- `tradingagents/agents/risk_mgmt/neutral_debator.py`
+- `tradingagents/agents/managers/portfolio_manager.py`
+
+Claude Code should add compact `analysis_brief` state, report brief extraction, and debate-history capping helpers. Downstream agents should use compact briefs by default while preserving `context_mode="full"` as the legacy full-report behavior. Compact prompts must preserve exact ticker symbols, including exchange suffixes such as `.TO`, `.L`, `.HK`, and `.T`.
+
+Do not edit the quant engine, execution contracts, backtest sizing, dataflow output compaction, or CLI telemetry for Phase 8 unless `plan-quantStrictDaytradeArchitecture.prompt.md` is updated to coordinate the overlap. Use fake LLMs for graph/unit tests unless testing provider adapters. Keep test coverage focused on compact briefs, capped debate history with latest-turn preservation, and full-mode compatibility.
+
+Token-saving workflow: use `rg` before opening files, read focused line ranges, do not paste full reports/logs/generated JSON into prompts, summarize findings with file paths, and run focused tests before full discovery.

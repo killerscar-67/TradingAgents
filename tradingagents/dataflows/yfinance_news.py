@@ -4,7 +4,33 @@ import yfinance as yf
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
+from .config import get_config
 from .stockstats_utils import yf_retry
+
+
+def _tool_cap_int(key: str, default: int) -> int:
+    value = get_config().get(key, default)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _truncate_summary(value: str) -> str:
+    max_chars = _tool_cap_int("tool_output_news_summary_max_chars", 280)
+    value = str(value or "").strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1].rstrip() + "…"
+
+
+def _render_news_article(title: str, publisher: str, summary: str, link: str) -> str:
+    article = f"### {title} (source: {publisher})\n"
+    if summary:
+        article += f"{_truncate_summary(summary)}\n"
+    if link:
+        article += f"Link: {link}\n"
+    return article + "\n"
 
 
 def _extract_article_data(article: dict) -> dict:
@@ -65,8 +91,9 @@ def get_news_yfinance(
         Formatted string containing news articles
     """
     try:
+        max_articles = _tool_cap_int("tool_output_news_max_articles", 8)
         stock = yf.Ticker(ticker)
-        news = yf_retry(lambda: stock.get_news(count=20))
+        news = yf_retry(lambda: stock.get_news(count=max_articles))
 
         if not news:
             return f"No news found for {ticker}"
@@ -75,7 +102,7 @@ def get_news_yfinance(
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        news_str = ""
+        rendered_articles = []
         filtered_count = 0
 
         for article in news:
@@ -87,18 +114,25 @@ def get_news_yfinance(
                 if not (start_dt <= pub_date_naive <= end_dt + relativedelta(days=1)):
                     continue
 
-            news_str += f"### {data['title']} (source: {data['publisher']})\n"
-            if data["summary"]:
-                news_str += f"{data['summary']}\n"
-            if data["link"]:
-                news_str += f"Link: {data['link']}\n"
-            news_str += "\n"
+            rendered_articles.append(
+                _render_news_article(
+                    data["title"],
+                    data["publisher"],
+                    data["summary"],
+                    data["link"],
+                )
+            )
             filtered_count += 1
+            if filtered_count >= max_articles:
+                break
 
         if filtered_count == 0:
             return f"No news found for {ticker} between {start_date} and {end_date}"
 
-        return f"## {ticker} News, from {start_date} to {end_date}:\n\n{news_str}"
+        header = f"## {ticker} News, from {start_date} to {end_date}:\n\n"
+        if filtered_count >= max_articles:
+            header += f"# Output capped to {max_articles} articles.\n\n"
+        return header + "".join(rendered_articles)
 
     except Exception as e:
         return f"Error fetching news for {ticker}: {str(e)}"
@@ -120,6 +154,8 @@ def get_global_news_yfinance(
     Returns:
         Formatted string containing global news articles
     """
+    max_articles = _tool_cap_int("tool_output_news_max_articles", limit)
+    limit = min(limit, max_articles)
     # Search queries for macro/global news
     search_queries = [
         "stock market economy",
@@ -164,7 +200,7 @@ def get_global_news_yfinance(
         start_dt = curr_dt - relativedelta(days=look_back_days)
         start_date = start_dt.strftime("%Y-%m-%d")
 
-        news_str = ""
+        rendered_articles = []
         for article in all_news[:limit]:
             # Handle both flat and nested structures
             if "content" in article:
@@ -184,14 +220,12 @@ def get_global_news_yfinance(
                 link = article.get("link", "")
                 summary = ""
 
-            news_str += f"### {title} (source: {publisher})\n"
-            if summary:
-                news_str += f"{summary}\n"
-            if link:
-                news_str += f"Link: {link}\n"
-            news_str += "\n"
+            rendered_articles.append(_render_news_article(title, publisher, summary, link))
 
-        return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
+        header = f"## Global Market News, from {start_date} to {curr_date}:\n\n"
+        if len(all_news) >= limit:
+            header += f"# Output capped to {limit} articles.\n\n"
+        return header + "".join(rendered_articles)
 
     except Exception as e:
         return f"Error fetching global news: {str(e)}"

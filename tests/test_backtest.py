@@ -30,6 +30,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import pandas as pd
+import tradingagents.quant.backtest as backtest_module
 
 from tradingagents.quant.backtest import (
     BacktestResult,
@@ -40,7 +41,7 @@ from tradingagents.quant.backtest import (
 )
 from tradingagents.quant.walkforward import run_walk_forward
 from tradingagents.quant.paper_gate import PaperGate, PaperGateResult
-from tradingagents.quant.contracts import QuantSignalContract, QuantSignalLabel
+from tradingagents.quant.contracts import EntryEngine, QuantSignalContract, QuantSignalLabel
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +208,44 @@ class TestBacktestMechanics(unittest.TestCase):
         self.assertGreater(trade.entry_bar_idx, 2)
         expected_open = float(self.bars_15m.iloc[trade.entry_bar_idx]["Open"])
         self.assertAlmostEqual(trade.entry_price, expected_open, places=4)
+
+    def test_real_quant_entry_payload_is_coerced_for_size_position(self):
+        """Backtest should pass the quant payload's entry engine/reason into risk sizing."""
+        signal = QuantSignalContract.from_raw(
+            "TEST",
+            "2024-01-02",
+            {
+                "signal": "buy",
+                "score": 1.0,
+                "confidence": 0.9,
+                "summary": "stub",
+                "entry": {
+                    "engine": "mean_reversion",
+                    "strength": 0.8,
+                    "reason": "RSI oversold",
+                },
+            },
+        )
+
+        with patch("tradingagents.quant.backtest.run_quant_engine", return_value=signal), patch(
+            "tradingagents.quant.backtest.compute_atr",
+            return_value=pd.Series([1.25], index=self.bars_15m.index[:1]),
+        ), patch(
+            "tradingagents.quant.backtest.size_position",
+            wraps=backtest_module.size_position,
+        ) as mock_size_position:
+            run_backtest(
+                "TEST",
+                self.bars_15m,
+                self.bars_4h,
+                10_000.0,
+                {**_BASE_CFG, "backtest_slippage_pct": 0.0, "atr_stop_mult": 1000.0},
+            )
+
+        self.assertTrue(mock_size_position.called)
+        entry_signal = mock_size_position.call_args.args[0]
+        self.assertEqual(entry_signal.engine, EntryEngine.MEAN_REVERSION)
+        self.assertEqual(entry_signal.reason, "RSI oversold")
 
     def test_slippage_applied_to_entry(self):
         """Long entry fill price > bar open (slippage adds cost)."""

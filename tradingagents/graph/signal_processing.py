@@ -13,6 +13,16 @@ class SignalProcessor:
         """Initialize with an LLM for processing."""
         self.quick_thinking_llm = quick_thinking_llm
 
+    def _parse_rating_line(self, full_signal: str) -> str | None:
+        pattern = r"(?im)^\s*Rating\s*:\s*(BUY|OVERWEIGHT|HOLD|UNDERWEIGHT|SELL)\b"
+        matches = re.findall(pattern, str(full_signal or ""))
+        if not matches:
+            return None
+        unique_matches = list(dict.fromkeys(match.upper() for match in matches))
+        if len(unique_matches) > 1:
+            raise ValueError(f"Ambiguous rating lines: {full_signal!r}")
+        return TradeRating(unique_matches[0]).value
+
     def process_signal(self, full_signal: str, execution_mode: ExecutionMode = "llm_assisted") -> str:
         """
         Process a full trading signal to extract the core decision.
@@ -29,6 +39,10 @@ class SignalProcessor:
                 "process_signal must not be used for execution in quant_strict mode; "
                 "use build_order_intent with a QuantSignalContract instead."
             )
+
+        parsed_rating = self._parse_rating_line(full_signal)
+        if parsed_rating is not None:
+            return parsed_rating
 
         messages = [
             (

@@ -37,9 +37,10 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .contracts import QuantSignalLabel
+from .contracts import EntryEngine, EntrySignal, QuantSignalLabel
 from .engine import run_quant_engine
 from .regime import compute_atr
+from .risk import compute_stops, size_position
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -149,29 +150,28 @@ def _compute_max_drawdown(equity_curve: Tuple[float, ...]) -> float:
     return float(abs(np.min(finite))) if len(finite) > 0 else 0.0
 
 
-# ---------------------------------------------------------------------------
-# Sizing helper
-# ---------------------------------------------------------------------------
+def _coerce_entry_signal(direction: str, signal_payload: Optional[Dict]) -> EntrySignal:
+    entry_payload = signal_payload.get("entry") if isinstance(signal_payload, dict) else None
+    engine_value = str(entry_payload.get("engine", EntryEngine.BREAKOUT.value)).strip().lower() if isinstance(entry_payload, dict) else EntryEngine.BREAKOUT.value
+    strength = entry_payload.get("strength", 1.0) if isinstance(entry_payload, dict) else 1.0
+    reason = str(entry_payload.get("reason", "backtest entry")) if isinstance(entry_payload, dict) else "backtest entry"
 
+    try:
+        engine = EntryEngine(engine_value)
+    except ValueError:
+        engine = EntryEngine.BREAKOUT
 
-def _compute_quantity(
-    direction: str,
-    fill_price: float,
-    last_atr: float,
-    equity: float,
-    cfg: Dict,
-) -> float:
-    """Fixed-fractional sizing consistent with Phase 3 risk module."""
-    if fill_price <= 0 or last_atr <= 0 or equity <= 0:
-        return 0.0
-    risk_pct = float(cfg.get("risk_per_trade_pct", 0.01))
-    atr_mult = float(cfg.get("atr_stop_mult", 2.0))
-    max_pos_pct = float(cfg.get("max_position_size_pct", 0.10))
+    try:
+        strength = float(strength)
+    except (TypeError, ValueError):
+        strength = 1.0
 
-    stop_dist = atr_mult * last_atr
-    raw_qty = (equity * risk_pct) / stop_dist
-    cap_qty = (equity * max_pos_pct) / fill_price
-    return max(0.0, min(raw_qty, cap_qty))
+    return EntrySignal(
+        engine=engine,
+        direction=direction,
+        strength=strength,
+        reason=reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -252,19 +252,28 @@ def run_backtest(
             if ptype == "entry" and pos_dir is None:
                 direction = pending["direction"]
                 last_atr = pending["atr"]
+                entry_signal = pending["entry_signal"]
                 # Conservative fill: pay up for buys, receive less for sells
                 sign = 1.0 if direction == "long" else -1.0
                 fill = max(bar_open * (1.0 + sign * slippage_pct), 1e-10)
-                qty = _compute_quantity(direction, fill, last_atr, realized_equity, cfg)
-                if qty > 0.0:
-                    stop_dist = float(cfg.get("atr_stop_mult", 2.0)) * last_atr
-                    pos_stop_price = (
-                        fill - stop_dist if direction == "long" else fill + stop_dist
+                try:
+                    size_contract = size_position(
+                        entry_signal,
+                        fill,
+                        last_atr,
+                        realized_equity,
+                        cfg,
                     )
+                    stop_contract = compute_stops(direction, fill, last_atr, cfg)
+                except ValueError:
+                    size_contract = None
+                    stop_contract = None
+                if size_contract is not None and stop_contract is not None and size_contract.quantity > 0.0:
+                    pos_stop_price = stop_contract.initial_stop
                     pos_dir = direction
                     pos_entry_bar = i
                     pos_entry_price = fill
-                    pos_quantity = qty
+                    pos_quantity = size_contract.quantity
                     pos_entry_ts = bar_ts
                     realized_equity -= commission  # entry commission
 
@@ -345,10 +354,12 @@ def run_backtest(
                     last_atr = float(atr_s.iloc[-1]) if not atr_s.empty else 0.0
                     if last_atr > 0.0:
                         direction = "long" if sig == QuantSignalLabel.BUY else "short"
+                        entry_signal = _coerce_entry_signal(direction, signal.raw)
                         pending = {
                             "type": "entry",
                             "direction": direction,
                             "atr": last_atr,
+                            "entry_signal": entry_signal,
                         }
             else:
                 if (pos_dir == "long" and sig == QuantSignalLabel.SELL) or (

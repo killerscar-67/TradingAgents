@@ -5,10 +5,68 @@ from typing import Annotated
 import yfinance as yf
 from langchain_core.tools import tool
 
+from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.interface import get_intraday_bars
+from tradingagents.quant.engine import run_quant_engine
+
 try:
     import vectorbt as vbt
 except ImportError:  # pragma: no cover - handled at runtime
     vbt = None
+
+
+def _contract_payload(contract) -> dict:
+    payload = contract.to_dict()
+    # Keep the legacy key alongside the typed contract key for callers that
+    # still display or cache the old payload shape.
+    payload["curr_date"] = contract.trade_date
+    return payload
+
+
+def _try_intraday_quant_engine(
+    symbol: str,
+    curr_date: str,
+    lookback_days: int,
+) -> str | None:
+    """Return deterministic engine payload when intraday bars are available.
+
+    The legacy daily MA/RSI screen remains the explicit fallback for providers
+    or historical ranges where intraday bars cannot be fetched.
+    """
+    cfg = get_config()
+    end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+    intraday_lookback = min(max(int(lookback_days), 1), 59)
+    start_dt = end_dt - timedelta(days=intraday_lookback)
+    start = start_dt.strftime("%Y-%m-%d")
+    end = curr_date
+
+    try:
+        bars_15m = get_intraday_bars(
+            symbol,
+            "15m",
+            start,
+            end,
+            session=cfg.get("intraday_default_session", "regular"),
+            cache_dir=cfg.get("intraday_cache_dir"),
+            refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),
+        )
+        bars_4h = get_intraday_bars(
+            symbol,
+            "4h",
+            start,
+            end,
+            session=cfg.get("intraday_default_session", "regular"),
+            cache_dir=cfg.get("intraday_cache_dir"),
+            refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),
+        )
+    except Exception:
+        return None
+
+    if bars_15m.empty or bars_4h.empty:
+        return None
+
+    contract = run_quant_engine(symbol, curr_date, bars_15m, bars_4h, cfg)
+    return json.dumps(_contract_payload(contract))
 
 
 @tool
@@ -22,9 +80,14 @@ def get_quant_signals(
 ) -> str:
     """Generate a lightweight quant signal summary using indicator calculations.
 
-    If vectorbt is available, use it for MA/RSI; otherwise fall back to
-    pandas-based calculations so the default quant path remains functional.
+    Prefer the deterministic intraday quant engine when 15m and 4h bars are
+    available. If intraday data cannot be fetched, fall back explicitly to the
+    legacy daily MA/RSI screen so the default quant path remains functional.
     """
+
+    engine_payload = _try_intraday_quant_engine(symbol, curr_date, lookback_days)
+    if engine_payload is not None:
+        return engine_payload
 
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     start_dt = end_dt - timedelta(days=lookback_days)

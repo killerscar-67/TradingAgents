@@ -1,6 +1,7 @@
 import unittest
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.signal_processing import SignalProcessor
 from tradingagents.quant.contracts import (
     EntryEngine,
@@ -30,6 +31,10 @@ class _FailLLM:
 
 
 class ExecutionContractTests(unittest.TestCase):
+    def test_initial_graph_state_includes_empty_analysis_brief(self):
+        state = Propagator().create_initial_state("AAPL", "2026-04-21")
+        self.assertEqual(state["analysis_brief"], {})
+
     def test_quant_signal_contract_parses_payload(self):
         payload = '{"signal":"buy","score":0.7,"confidence":0.6,"summary":"ok"}'
         contract = QuantSignalContract.from_raw("AAPL", "2026-04-21", payload)
@@ -46,6 +51,22 @@ class ExecutionContractTests(unittest.TestCase):
         processor = SignalProcessor(_DummyLLM("BUY"))
         rating = processor.process_signal("ignored", execution_mode="llm_assisted")
         self.assertEqual(rating, TradeRating.BUY.value)
+
+    def test_signal_processor_uses_rating_line_without_llm(self):
+        processor = SignalProcessor(_FailLLM())
+        rating = processor.process_signal(
+            "Portfolio decision\nRating: Buy\nRationale: valid direct parse",
+            execution_mode="llm_assisted",
+        )
+        self.assertEqual(rating, TradeRating.BUY.value)
+
+    def test_signal_processor_conflicting_rating_lines_raise_without_llm(self):
+        processor = SignalProcessor(_FailLLM())
+        with self.assertRaises(ValueError):
+            processor.process_signal(
+                "Rating: Buy\nRationale: first view\nRating: Sell\nRationale: conflict",
+                execution_mode="llm_assisted",
+            )
 
     def test_signal_processor_llm_assisted_raises_on_malformed_output(self):
         processor = SignalProcessor(_DummyLLM("no actionable rating"))
@@ -108,6 +129,30 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertTrue(intent["blocked"])
         self.assertIn("kill switch", intent["reason"])
         self.assertTrue(intent["annotations"]["risk"]["gate"]["kill_switch"])
+
+    def test_quant_strict_order_intent_does_not_call_llm(self):
+        graph = TradingAgentsGraph.__new__(TradingAgentsGraph)
+        graph.execution_mode = "quant_strict"
+        graph.config = {}
+        graph.signal_processor = SignalProcessor(_FailLLM())
+
+        quant_contract = QuantSignalContract.from_raw(
+            "AAPL",
+            "2026-04-21",
+            {"signal": "buy", "score": 0.9, "summary": "strict quant"},
+        )
+
+        intent = TradingAgentsGraph.build_order_intent(
+            graph,
+            "AAPL",
+            "2026-04-21",
+            "Rating: Sell",
+            quant_contract=quant_contract,
+        )
+
+        self.assertEqual(intent["rating"], TradeRating.BUY.value)
+        self.assertEqual(intent["source"], "quant_strict")
+        self.assertEqual(intent["annotations"]["llm_final_trade_decision"], "Rating: Sell")
 
     def test_build_order_intent_blocks_when_exposure_cap_is_exceeded(self):
         graph = TradingAgentsGraph.__new__(TradingAgentsGraph)

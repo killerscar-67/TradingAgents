@@ -264,6 +264,20 @@ def format_tokens(n):
     return str(n)
 
 
+def top_token_bucket(bucket_stats):
+    """Return the highest-token bucket as (name, total_tokens), if any."""
+    best_name = None
+    best_total = 0
+    for name, totals in (bucket_stats or {}).items():
+        total = int(totals.get("tokens_in", 0) or 0) + int(totals.get("tokens_out", 0) or 0)
+        if total > best_total:
+            best_name = name
+            best_total = total
+    if best_name is None:
+        return None
+    return best_name, best_total
+
+
 def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
     # Header with welcome message
     layout["header"].update(
@@ -455,6 +469,14 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
         else:
             tokens_str = "Tokens: --"
         stats_parts.append(tokens_str)
+
+        top_agent = top_token_bucket(stats.get("per_agent"))
+        if top_agent:
+            stats_parts.append(f"Top Agent: {top_agent[0]} {format_tokens(top_agent[1])}")
+
+        top_stage = top_token_bucket(stats.get("per_stage"))
+        if top_stage:
+            stats_parts.append(f"Top Stage: {top_stage[0]} {format_tokens(top_stage[1])}")
 
     stats_parts.append(f"Reports: {reports_completed}/{reports_total}")
 

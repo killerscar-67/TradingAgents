@@ -28,6 +28,24 @@ DEFAULT_CONFIG = {
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # Compact context mode (Phase 8)
+    # "full": pass complete analyst reports to downstream agents (legacy behaviour)
+    # "compact": pass 400-char briefs; debate histories are capped at 2000 chars
+    "context_mode": os.getenv("TRADINGAGENTS_CONTEXT_MODE", "compact"),
+    # Maximum characters per brief entry when context_mode="compact"
+    "brief_max_chars": 400,
+    # Maximum total characters for a debate history passed to an agent prompt
+    "debate_max_chars": 2000,
+    # Latest characters of debate history that are always preserved verbatim
+    "debate_preserve_chars": 600,
+    # Tool-output compaction (Phase 8)
+    "tool_output_ohlcv_max_rows": 120,
+    "tool_output_indicator_max_points": 30,
+    "tool_output_fundamentals_max_fields": 18,
+    "tool_output_financial_max_rows": 20,
+    "tool_output_financial_max_cols": 4,
+    "tool_output_news_max_articles": 8,
+    "tool_output_news_summary_max_chars": 280,
     # Execution mode for downstream order intent generation.
     # llm_assisted: keep legacy LLM-extracted decision path
     # quant_strict: deterministic quant contract drives order intent

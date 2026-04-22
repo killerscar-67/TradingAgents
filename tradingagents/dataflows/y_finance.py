@@ -4,7 +4,48 @@ from dateutil.relativedelta import relativedelta
 import pandas as pd
 import yfinance as yf
 import os
+from .config import get_config
 from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry, load_ohlcv, filter_financials_by_date
+
+
+def _tool_cap_int(key: str, default: int) -> int:
+    value = get_config().get(key, default)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    if not value:
+        return ""
+    value = str(value).strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1].rstrip() + "…"
+
+
+def _cap_dataframe(
+    data: pd.DataFrame,
+    row_key: str,
+    col_key: str | None = None,
+    keep_recent_rows: bool = False,
+) -> tuple[pd.DataFrame, list[str]]:
+    capped = data.copy()
+    notes = []
+
+    max_rows = _tool_cap_int(row_key, len(capped) or 1)
+    if len(capped) > max_rows:
+        capped = capped.iloc[-max_rows:] if keep_recent_rows else capped.iloc[:max_rows]
+        notes.append(f"Output capped to {max_rows} rows.")
+
+    if col_key is not None:
+        max_cols = _tool_cap_int(col_key, len(capped.columns) or 1)
+        if len(capped.columns) > max_cols:
+            capped = capped.iloc[:, :max_cols]
+            notes.append(f"Output capped to {max_cols} columns.")
+
+    return capped, notes
 
 def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
@@ -37,6 +78,12 @@ def get_YFin_data_online(
         if col in data.columns:
             data[col] = data[col].round(2)
 
+    data, notes = _cap_dataframe(
+        data,
+        "tool_output_ohlcv_max_rows",
+        keep_recent_rows=True,
+    )
+
     # Convert DataFrame to CSV string
     csv_string = data.to_csv()
 
@@ -44,6 +91,8 @@ def get_YFin_data_online(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    if notes:
+        header += "# " + " ".join(notes) + "\n\n"
 
     return header + csv_string
 
@@ -158,6 +207,10 @@ def get_stock_stats_indicators_window(
             date_values.append((date_str, indicator_value))
             current_dt = current_dt - relativedelta(days=1)
         
+        max_points = _tool_cap_int("tool_output_indicator_max_points", len(date_values) or 1)
+        if len(date_values) > max_points:
+            date_values = date_values[:max_points]
+
         # Build the result string
         ind_string = ""
         for date_str, value in date_values:
@@ -181,6 +234,9 @@ def get_stock_stats_indicators_window(
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")
     )
+
+    if len(date_values) == max_points and (curr_date_dt - before).days + 1 > max_points:
+        result_str += f"\n\n# Output capped to the most recent {max_points} points."
 
     return result_str
 
@@ -288,15 +344,19 @@ def get_fundamentals(
             ("Free Cash Flow", info.get("freeCashflow")),
         ]
 
+        max_fields = _tool_cap_int("tool_output_fundamentals_max_fields", len(fields) or 1)
         lines = []
         for label, value in fields:
             if value is not None:
                 lines.append(f"{label}: {value}")
+        capped_lines = lines[:max_fields]
 
         header = f"# Company Fundamentals for {ticker.upper()}\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        if len(lines) > max_fields:
+            header += f"# Output capped to {max_fields} fields.\n\n"
 
-        return header + "\n".join(lines)
+        return header + "\n".join(capped_lines)
 
     except Exception as e:
         return f"Error retrieving fundamentals for {ticker}: {str(e)}"
@@ -320,6 +380,11 @@ def get_balance_sheet(
 
         if data.empty:
             return f"No balance sheet data found for symbol '{ticker}'"
+        data, notes = _cap_dataframe(
+            data,
+            "tool_output_financial_max_rows",
+            "tool_output_financial_max_cols",
+        )
             
         # Convert to CSV string for consistency with other functions
         csv_string = data.to_csv()
@@ -327,6 +392,8 @@ def get_balance_sheet(
         # Add header information
         header = f"# Balance Sheet data for {ticker.upper()} ({freq})\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        if notes:
+            header += "# " + " ".join(notes) + "\n\n"
         
         return header + csv_string
         
@@ -352,6 +419,12 @@ def get_cashflow(
 
         if data.empty:
             return f"No cash flow data found for symbol '{ticker}'"
+        data, notes = _cap_dataframe(
+            data,
+            "tool_output_financial_max_rows",
+            "tool_output_financial_max_cols",
+            keep_recent_rows=True,
+        )
             
         # Convert to CSV string for consistency with other functions
         csv_string = data.to_csv()
@@ -359,6 +432,8 @@ def get_cashflow(
         # Add header information
         header = f"# Cash Flow data for {ticker.upper()} ({freq})\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        if notes:
+            header += "# " + " ".join(notes) + "\n\n"
         
         return header + csv_string
         
@@ -384,6 +459,11 @@ def get_income_statement(
 
         if data.empty:
             return f"No income statement data found for symbol '{ticker}'"
+        data, notes = _cap_dataframe(
+            data,
+            "tool_output_financial_max_rows",
+            "tool_output_financial_max_cols",
+        )
             
         # Convert to CSV string for consistency with other functions
         csv_string = data.to_csv()
@@ -391,6 +471,8 @@ def get_income_statement(
         # Add header information
         header = f"# Income Statement data for {ticker.upper()} ({freq})\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        if notes:
+            header += "# " + " ".join(notes) + "\n\n"
         
         return header + csv_string
         
@@ -408,6 +490,11 @@ def get_insider_transactions(
         
         if data is None or data.empty:
             return f"No insider transactions data found for symbol '{ticker}'"
+        data, notes = _cap_dataframe(
+            data,
+            "tool_output_financial_max_rows",
+            "tool_output_financial_max_cols",
+        )
             
         # Convert to CSV string for consistency with other functions
         csv_string = data.to_csv()
@@ -415,6 +502,8 @@ def get_insider_transactions(
         # Add header information
         header = f"# Insider Transactions data for {ticker.upper()}\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        if notes:
+            header += "# " + " ".join(notes) + "\n\n"
         
         return header + csv_string
         
