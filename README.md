@@ -28,6 +28,7 @@
 # TradingAgents: Multi-Agents LLM Financial Trading Framework
 
 ## News
+- [2026-04] **Post-v0.2.3** additions: DeepSeek, Qwen, GLM, and Azure OpenAI provider support; Docker cross-platform deployment; dynamic OpenRouter model selection; tool call logging fixes; cache/logs moved to `~/.tradingagents/`.
 - [2026-03] **TradingAgents v0.2.3** released with multi-language support, GPT-5.4 family models, unified model catalog, backtesting date fidelity, and proxy support.
 - [2026-03] **TradingAgents v0.2.2** released with GPT-5.4/Gemini 3.1/Claude 4.6 model coverage, five-tier rating scale, OpenAI Responses API, Anthropic effort control, and cross-platform stability.
 - [2026-02] **TradingAgents v0.2.0** released with multi-provider LLM support (GPT-5.x, Gemini 3.x, Claude 4.x, Grok 4.x) and improved system architecture.
@@ -142,12 +143,20 @@ export ANTHROPIC_API_KEY=...       # Anthropic (Claude)
 export XAI_API_KEY=...             # xAI (Grok)
 export DEEPSEEK_API_KEY=...        # DeepSeek
 export DASHSCOPE_API_KEY=...       # Qwen (Alibaba DashScope)
-export ZHIPU_API_KEY=...           # GLM (Zhipu)
+export ZHIPU_API_KEY=...           # GLM (Zhipu AI)
 export OPENROUTER_API_KEY=...      # OpenRouter
-export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
+export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage (optional data enrichment)
 ```
 
-For enterprise providers (e.g. Azure OpenAI, AWS Bedrock), copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
+For **Azure OpenAI**, set these four variables (or add them to `.env.enterprise`):
+```bash
+export AZURE_OPENAI_API_KEY=...            # Azure API key
+export AZURE_OPENAI_ENDPOINT=...           # e.g. https://<resource>.openai.azure.com/
+export AZURE_OPENAI_DEPLOYMENT_NAME=...    # Deployment name in Azure portal
+export OPENAI_API_VERSION=...              # e.g. 2025-03-01-preview
+```
+
+For other enterprise providers, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
 
 For local models, configure Ollama with `llm_provider: "ollama"` in your config.
 
@@ -183,7 +192,7 @@ An interface will appear showing results as they load, letting you track the age
 
 ### Implementation Details
 
-We built TradingAgents with LangGraph to ensure flexibility and modularity. The framework supports multiple LLM providers: OpenAI, Google, Anthropic, xAI, OpenRouter, and Ollama.
+We built TradingAgents with LangGraph to ensure flexibility and modularity. The framework supports multiple LLM providers: OpenAI, Google, Anthropic, xAI, DeepSeek, Qwen, GLM, Azure OpenAI, OpenRouter, and Ollama.
 
 ### Python Usage
 
@@ -207,17 +216,34 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "openai"        # openai, google, anthropic, xai, openrouter, ollama
-config["deep_think_llm"] = "gpt-5.4"     # Model for complex reasoning
-config["quick_think_llm"] = "gpt-5.4-mini" # Model for quick tasks
+
+# LLM provider — choose one:
+# "openai", "anthropic", "google", "xai",
+# "deepseek", "qwen", "glm", "azure", "openrouter", "ollama"
+config["llm_provider"] = "openai"
+
+config["deep_think_llm"] = "gpt-5.4"       # Model for complex reasoning
+config["quick_think_llm"] = "gpt-5.4-mini" # Model for fast tasks
+
+# Optional: provider-specific reasoning controls
+config["openai_reasoning_effort"] = "high"  # "low", "medium", "high"
+config["anthropic_effort"] = "high"         # "low", "medium", "high"
+config["google_thinking_level"] = "high"    # "minimal", "low", "medium", "high"
+
+# Debate and risk discussion depth
 config["max_debate_rounds"] = 2
+config["max_risk_discuss_rounds"] = 1
+
+# Output language for analyst reports and final decision
+# Internal agent reasoning always stays in English for quality
+config["output_language"] = "English"       # e.g. "Chinese", "Spanish", "Japanese"
 
 ta = TradingAgentsGraph(debug=True, config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 print(decision)
 ```
 
-See `tradingagents/default_config.py` for all configuration options.
+See `tradingagents/default_config.py` for the full list of configuration keys.
 
 ## Contributing
 
