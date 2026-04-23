@@ -48,4 +48,9 @@ Expected: workflow contract tests pass; existing web API/runner tests remain gre
 
 ## Fix notes
 
-- None.
+- 2026-04-23: Addressed `reviews/phase-9/review-20260423_214536-94db6e5.md`.
+  - Stripped nested `config["execution_mode"]` from the backtest contract response so `quant_strict` is unambiguous.
+  - Changed the market WebSocket handler to close only on the non-disconnect path.
+  - Added `selected_analysts` to `BatchRequest`.
+  - Added an SSE contract test for `GET /api/batches/{batch_id}/events`.
+  - Added `total` to the `/api/history` response envelope.

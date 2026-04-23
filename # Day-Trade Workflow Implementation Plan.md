@@ -13,7 +13,14 @@ Build `docs/ux-design-daytrade-workflow.md` as UX phases `9-13` on the existing 
 - Add API surface:
   `GET /api/market/overview`, `WS /api/market/live`, `POST /api/screening/runs`, `POST /api/baskets`, `POST /api/batches`, `GET /api/batches/{id}/events`, `POST /api/strategies/from-batch`, `POST /api/broker/futu/stage`, `POST /api/backtests`, `GET /api/backtests/{id}/events`, `GET/PUT /api/settings`, `GET/POST /api/watchlists`, `GET/POST /api/strategy-presets`, `GET /api/history`.
 - Add mirrored TypeScript types in `web/src/types.ts`; keep them manually maintained for v1.
-- Add workflow/backend models for `MarketOverview`, `ScreeningRun`, `TickerBasket`, `AnalysisBatch`, `TradePlan`, `StrategyPreset`, and `BacktestRun`.
+- Add workflow/backend models for `MarketOverview`, `ScreeningRun`, `TickerBasket`, `AnalysisBatch`, `TradePlan`, `StrategyPreset`, `BacktestRun`, `WorkflowSession`, `SettingsSnapshot`, and `HistoryEntry`.
+
+### Phase 10 contract notes
+
+- `workflow_sessions` is a first-class persistence surface, not an internal implementation detail. Each session stores the current workflow stage, home market, inherited upstream artifacts, selected basket/strategy/backtest references, and the last-opened screen so the desktop workflow can resume exactly where the user left it.
+- `GET /api/history` must return a unified history feed covering batch analyses, saved strategy plans, backtest runs, staged broker exports, and legacy single-ticker archives already stored on disk. SQLite stores metadata and paths; large report markdown and JSON remain in `results_dir`.
+- `GET/PUT /api/settings` must cover at minimum: home market, data vendor choice, economic-calendar source, live-quote mode, model/provider selections, default workflow shortcut universe, broker staging settings, and cost/runtime preferences used by the screen and batch estimates.
+- The UX design doc is the source of truth for History filters/actions, Settings sections, and workflow-session resume behavior. Phase 10 should not invent alternate shapes.
 
 ## Agent Allocation
 - **Codex, reviewed by Claude Code:** update [scripts/review.sh](/Users/josephwong/TradingAgents/scripts/review.sh) and [scripts/run_phase.sh](/Users/josephwong/TradingAgents/scripts/run_phase.sh); implement backend workflow APIs, deterministic market/screening/strategy/backtest orchestration, and Futu stage-only adapter.
@@ -43,5 +50,5 @@ Script updates:
 ## Assumptions
 - Use SQLite, not JSON-only persistence, because watchlists, presets, workflow sessions, and history need queryable metadata.
 - Keep existing report markdown/JSON artifacts on disk; DB stores metadata and paths.
-- Default home market is `US`; default workflow shortcut screens top 10 from S&P 500.
+- Default home market is `US`; the one-click workflow shortcut screens the top 10 names from the default universe for the selected home market (`S&P 500` for US, `HSI` for HK, `Nikkei 225` for JP, etc.).
 - Desktop-only means no mobile navigation or breakpoint-specific layouts in v1.

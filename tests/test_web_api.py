@@ -355,6 +355,58 @@ class ConsultantChatTests(unittest.TestCase):
         client_wrapper.get_llm.assert_called_once_with()
         self.assertIs(mock_chat.call_args.args[0], llm)
 
+    def test_archived_consultant_route_uses_runnable_llm_from_client_wrapper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_id = "archived-consultant-run"
+            state_file = Path(tmp) / "MSFT" / "2026-04-22" / "web_runs" / run_id / "run_state.json"
+            state_file.parent.mkdir(parents=True)
+            state_file.write_text(json.dumps({
+                "run_id": run_id,
+                "ticker": "MSFT",
+                "analysis_date": "2026-04-22",
+                "selected_analysts": ["market"],
+                "execution_mode": "llm_assisted",
+                "llm_provider": "openai",
+                "deep_think_llm": "gpt-4o",
+                "quick_think_llm": "gpt-4o-mini",
+                "created_at": "2026-04-22T10:00:00Z",
+                "status": "completed",
+                "started_at": "2026-04-22T10:00:01Z",
+                "completed_at": "2026-04-22T10:05:00Z",
+                "report_sections": {"market_report": "Archived market report."},
+                "report_paths": {},
+                "stats": {},
+                "errors": [],
+                "final_order_intent": None,
+            }))
+
+            mock_response = MagicMock()
+            mock_response.to_dict.return_value = {
+                "answer": "Archived consultant response.",
+                "observations": [],
+                "follow_up_questions": [],
+                "referenced_context_keys": ["market_report"],
+                "blocking": False,
+                "error": None,
+            }
+
+            llm = object()
+            client_wrapper = MagicMock()
+            client_wrapper.get_llm.return_value = llm
+
+            with (
+                patch.dict("tradingagents.web.runner.DEFAULT_CONFIG", {"results_dir": tmp}, clear=False),
+                patch("tradingagents.web.routes.consultant.chat_trade_review", return_value=mock_response) as mock_chat,
+                patch("tradingagents.web.routes.consultant.create_llm_client", return_value=client_wrapper),
+            ):
+                resp = self.client.post(f"/api/analysis/{run_id}/consultant/chat", json={
+                    "message": "Why BUY?",
+                })
+
+        self.assertEqual(resp.status_code, 200)
+        client_wrapper.get_llm.assert_called_once_with()
+        self.assertIs(mock_chat.call_args.args[0], llm)
+
     def test_unknown_run_returns_404(self):
         resp = self.client.post("/api/analysis/no-such-run/consultant/chat", json={
             "message": "Hello",

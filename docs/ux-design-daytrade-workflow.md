@@ -322,15 +322,27 @@ High-impact events to surface explicitly (`event_risk_flag: true`):
 ├──────────────────────────────────────────────────────────────────────────┤
 │  Portfolio size: $100,000   Risk per trade: 1% ($1,000)  (per-strategy)  │
 │                                                                          │
-│  ┌─ Trades ─────────────────────────────────────────────────────────┐   │
+│  ┌─ Trades (click a row to see the chart) ──────────────────────────┐   │
 │  │ Ticker  Rating  Entry    Stop     Target  Size    R:R   Notes    │   │
-│  │ NVDA    ▲ BUY   142.30  138.50   152.00   263 sh  2.4  "Break of │   │
+│  │▶NVDA    ▲ BUY   142.30  138.50   152.00   263 sh  2.4  "Break of │   │
 │  │                                                         resist."  │   │
 │  │ AAPL    ▲ BUY   178.50  175.20   185.00   303 sh  2.0           │   │
 │  │ SHOP.TO ▲ BUY    98.40   95.80   104.00   385 sh  2.2           │   │
 │  │ META    = HOLD   —       —        —        —       —   Skipped   │   │
 │  │ 9984.T  ▼ SHORT  3,820   3,920    3,620    -26 sh  2.0  "Break of │   │
 │  │                                                         support." │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  ┌─ NVDA · 1D · candles + volume ───────────────────────────────────┐   │
+│  │                                  ╭─────── Target 152.00 ─────────┤   │
+│  │                         ╭──╮ ╭╮ ╭╯                                │   │
+│  │                      ╭──╯  ╰─╯╰─╯                  ← Entry 142.30│   │
+│  │                  ╭─╮ ╯                                            │   │
+│  │       ╭──╮     ╭─╯ ╰╯                       ← Stop  138.50       │   │
+│  │ ╭─╮╭──╯  ╰─────╯                                                  │   │
+│  │ ╯ ╰╯                                                              │   │
+│  │ ▁▂▁▃▄▂▃▅▆▄▅▇▆█▅▄▆▇▆█▅▃ volume                                   │   │
+│  │ 1m  5m  15m  1h  4h [1D]  1W             + SMA 20 · ADX · Vol   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 │  ┌─ Exposure ─────────────────────┐  ┌─ Risk ──────────────────────┐    │
@@ -376,9 +388,9 @@ High-impact events to surface explicitly (`event_risk_flag: true`):
 
 ## 6. Screen 5 — Backtest & Walkforward
 
-**Purpose.** Validate: would this entire workflow (regime check → screen → analyze → trade plan) have worked historically? Walk-forward specifically prevents the "it looks great because we tuned it on the same data" trap.
+**Purpose.** Validate the deterministic trade plan artifact produced by this workflow against historical bars. The workflow still matters because regime, basket selection, ratings, and risk settings decide what gets frozen into the trade plan, but the historical replay itself is quant-strict and reproducible. Walk-forward specifically prevents the "it looks great because we tuned it on the same data" trap.
 
-**Important mode note.** Backtest and walk-forward run in `quant_strict` mode — the deterministic quant signal drives the trade rating, no LLM in the loop. That is the only way to make multi-year historical simulations tractable: running the full 5-agent LLM pipeline across thousands of bar-days would be slow and prohibitively expensive, and would also introduce run-to-run variance that makes parameter sensitivity meaningless. The UI should make this visible — see the mode banner below.
+**Important mode note.** Backtest and walk-forward run in `quant_strict` mode — the deterministic quant signal drives the trade rating and no LLM runs inside the replay loop. The backtest artifact is therefore: `workflow inputs frozen at run time` + `deterministic quant-strict historical execution`. That is the only way to make multi-year simulations tractable and reproducible.
 
 **Layout sketch**
 
@@ -422,6 +434,27 @@ High-impact events to surface explicitly (`event_risk_flag: true`):
 │  │   • Stop width: 1% → 2% → 3%        (Sharpe 1.5 / 1.2 / 0.9)      │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
+│  ┌─ Trade log (click a trade to replay) ─────────────────────────────┐  │
+│  │ Date         Ticker   Side   Entry   Exit    P&L      Bars held   │  │
+│  │▶2025-03-14   NVDA     LONG   118.40  122.80  +3.7%    4           │  │
+│  │ 2025-03-14   META     LONG   612.00  608.50  -0.6%    1 (stopped) │  │
+│  │ 2025-03-17   SHOP.TO  LONG    85.20   91.60  +7.5%    6           │  │
+│  │ ...                                                                │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌─ Trade replay — NVDA 2025-03-14 ──────────────────────────────────┐  │
+│  │                                                                    │  │
+│  │                                 ▲ exit 122.80 (+3.7%)              │  │
+│  │                          ╭╮╭╮╭──╯                                  │  │
+│  │                       ╭──╯╰╯╰╯                                     │  │
+│  │                    ╭──╯                                            │  │
+│  │             ╭╮   ╭─╯ ● entry 118.40                                │  │
+│  │    ╭╮╭──╮ ╭╯╰╮╭─╯                                                  │  │
+│  │ ╭──╯╰╯  ╰─╯  ╰╯                   ...stop 115.20 (not hit)         │  │
+│  │                                                                    │  │
+│  │ [‹ prev trade]  [▶ play bar-by-bar]  [next trade ›]               │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
 │  [Save run as "Breakout v2 — Apr 2026"]  [Compare to...]  [Export]       │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -447,9 +480,143 @@ High-impact events to surface explicitly (`event_risk_flag: true`):
 
 ---
 
-## 7. Cross-cutting design notes
+## 7. Screen 6 — 歷史 / History
 
-### 7.1 State that flows between screens
+**Purpose.** Provide one place to reopen any saved workflow artifact or legacy archive without the user needing to remember whether it came from the old single-ticker UI or the new day-trade workflow.
+
+**What appears here**
+
+History is a unified feed. It must include all of the following item types:
+
+- Legacy single-ticker archived analyses already stored on disk under `results_dir`
+- Batch analysis runs from Screen 3
+- Saved trade-plan / strategy artifacts from Screen 4
+- Backtest runs from Screen 5
+- Broker stage requests created by `Send to Futu`
+
+Every item in the feed must expose at least:
+
+- stable id
+- item type
+- created / completed timestamps
+- ticker or basket summary
+- home market
+- workflow session id, if present
+- status
+- primary path reference into `results_dir`, if applicable
+- summary metadata needed for the list view without opening the full report
+
+**Layout sketch**
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  History / Past runs                                                     │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Filters: [All types ▼] [All markets ▼] [Status ▼] [Date range ▼]       │
+│ Search:  [ ticker / basket / preset / run id                      ]     │
+│                                                                          │
+│ 2026-04-23                                                               │
+│ ┌─ Batch analysis ─ 5 tickers · completed · workflow sess-1024 ──────┐ │
+│ │ NVDA · AAPL · SHOP.TO · 9984.T · META        [Open strategy] [Re-run]│ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+│ ┌─ Strategy plan ─ Breakout v2 · US home market ─────────────────────┐ │
+│ │ 4 trades · gross 182% · max loss 3.95%      [Open] [Backtest again] │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+│ ┌─ Backtest ─ OOS Sharpe 1.24 · Max DD -11.8% ───────────────────────┐ │
+│ │ 2024-01-01 → 2026-04-23                           [Open] [Compare]   │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+│ ┌─ Legacy analysis ─ MSFT · single ticker archive ───────────────────┐ │
+│ │ Completed in old UI flow                              [Open report]  │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Filters and actions contract**
+
+- Filter by item type: `legacy_analysis`, `batch_analysis`, `strategy_plan`, `backtest_run`, `broker_stage_request`
+- Filter by market, status, and date range
+- Search by ticker, basket name, preset name, workflow session id, or run id
+- Primary action opens the artifact in its native screen
+- Secondary actions are item-type specific:
+  - batch analysis: `Open strategy`, `Re-run`
+  - strategy plan: `Open`, `Backtest again`, `Duplicate as preset`
+  - backtest run: `Open`, `Compare`, `Export`
+  - broker stage request: `View staged orders`, `Duplicate`
+  - legacy analysis: `Open report`, `Create strategy from archive` when enough context exists
+
+**Archive compatibility rule**
+
+Legacy disk-only archives must show up in History even if they have no SQLite row yet. On first open or list scan, the backend may hydrate a metadata row into SQLite, but the user experience must treat old and new artifacts as one continuous history.
+
+---
+
+## 8. Screen 7 — 設定 / Settings
+
+**Purpose.** Central place for all persistence-heavy defaults that influence workflow sessions, estimates, providers, and broker staging.
+
+**Sections**
+
+- General
+  - Home market
+  - Default workflow shortcut universe per market
+  - Output language
+- Models & Providers
+  - LLM provider
+  - deep-think model
+  - quick-think model
+  - data vendors
+  - live quote mode and delayed fallback behavior
+- Workflow Defaults
+  - default top-N screen size
+  - default score floor
+  - default risk-per-trade
+  - default portfolio size
+  - allow shorts by default
+- Broker
+  - Futu / OpenD connection settings
+  - stage-only enabled indicator
+- Watchlists & Presets
+  - saved watchlists
+  - strategy presets
+
+**Layout sketch**
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Settings                                                               │
+├──────────────────────────────────────────────────────────────────────────┤
+│ General         Models & Providers        Workflow Defaults   Broker     │
+│                                                                          │
+│ Home market:            [ US ▼ ]                                        │
+│ Default shortcut list:  [ S&P 500 ▼ ]                                   │
+│ Output language:        [ English ▼ ]                                   │
+│                                                                          │
+│ LLM provider:           [ openai ▼ ]                                    │
+│ Deep-think model:       [ gpt-5.4 ▼ ]                                   │
+│ Quick-think model:      [ gpt-5.4-mini ▼ ]                              │
+│                                                                          │
+│ Risk per trade:         [ 1.0 % ]                                       │
+│ Portfolio size:         [ 100000 ]                                      │
+│ Allow shorts by default [✓]                                             │
+│                                                                          │
+│ Futu / OpenD:           Connected ●                                     │
+│ [Save settings]                                         [Test broker]   │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Persistence contract**
+
+- Settings are global defaults persisted in SQLite.
+- A workflow session snapshots the settings values it inherited at creation time so later changes do not silently mutate an in-progress session.
+- Saved strategy presets can override the global defaults for `portfolio_size`, `risk_per_trade`, and `allow_shorts`.
+
+---
+
+## 9. Cross-cutting design notes
+
+---
+
+### 9.1 State that flows between screens
 
 ```
 Screen 1 ──regime, entry_mode, event_risk─────▶ Screen 2
@@ -460,13 +627,39 @@ Screen 5 ──backtest_run, optional tweaks──────▶ History
          ◀──(re-apply adjusted params)────────  Screen 4
 ```
 
+### 9.1a Workflow session lifecycle
+
+Every top-level journey is represented by a `workflow_session` row in SQLite.
+
+Session states:
+
+- `draft`: screen opened, no durable artifact yet
+- `active`: at least one durable artifact created
+- `completed`: user reached a terminal artifact they chose to save
+- `archived`: hidden from default active-session lists but still present in History
+
+Minimum session fields:
+
+- `session_id`
+- `current_screen`
+- `home_market`
+- inherited upstream references (`market_overview_id`, `screening_run_id`, `basket_id`, `batch_id`, `strategy_id`, `backtest_id`)
+- snapshot of effective settings defaults at session start
+- created / updated timestamps
+
+Resume behavior:
+
+- Opening an unfinished session restores the user to `current_screen` with the latest saved upstream artifacts.
+- Completing a later screen does not delete earlier artifacts; it links them into the same session timeline.
+- History can group by workflow session or flatten by artifact type.
+
 Each screen should show a compact "inherited from" chip near the top so the user can see what came from upstream:
 - Screen 2: `Regime: Trending (from Market)` with a link back.
 - Screen 3: `5 tickers (from Screening)`.
 - Screen 4: `Setups: 3 BUY, 1 HOLD, 1 SELL (from Batch analysis)`.
 - Screen 5: `Strategy: Today's plan (from Trade plan)`.
 
-### 7.2 Starting from any screen
+### 9.2 Starting from any screen
 
 Every screen accepts a "blank start":
 - Screen 2 without a Screen 1 regime → defaults to `entry_mode: auto`.
@@ -474,48 +667,91 @@ Every screen accepts a "blank start":
 - Screen 4 without a Screen 3 run → empty state with "Run a batch analysis first, or add trades manually" and a way to manually enter setups.
 - Screen 5 without a Screen 4 strategy → shows saved presets to choose from, or "Build a strategy first."
 
-### 7.3 "Do it all at once" shortcut
+### 9.3 "Do it all at once" shortcut
 
 Power-user shortcut on the home screen: **Run full workflow** button. Behaves like:
 1. Pull market data → classify regime.
-2. Run quant screen with defaults (top 10 from S&P 500).
+2. Run quant screen with defaults for the selected `home_market` (top 10 from the default home-market universe: `S&P 500` for US, `HSI` for HK, `Nikkei 225` for JP, etc.).
 3. Batch-analyze the 10.
 4. Assemble a trade plan.
 5. Show Screen 4 when done.
 
 One click, ~10 minutes, clear status along the way.
 
-### 7.4 Shared copy patterns (reuse of earlier UX work)
+### 9.4 Shared copy patterns (reuse of earlier UX work)
 
 All errors follow: **what happened · why · how to fix**.
 All CTAs are verb-first outcomes, not "Submit" or "OK".
 All jargon gets a tooltip, and the tooltip explains in plain language before showing the technical term.
 Every long-running action shows an estimated time and cost before the user commits.
 
-### 7.5 Language
+### 9.5 Language
 
 Primary labels in the user's `output_language`. Parenthetical English terms kept for ambiguous finance terms (`走勢回歸 (Mean reversion)`). Code-level strings (ticker suffixes, parameter names like `entry_mode`) are never localized.
 
+### 9.6 Charting
+
+**v1 library: TradingView `lightweight-charts` (MIT).** One shared chart component used across Screens 1, 2, 4, and 5. Chosen for v1 because it ships today with no approval step, which matters while the Advanced Charts license application is in review.
+
+**v2 upgrade path: TradingView Advanced Charts (Charting Library).** Migrate once the license is approved. The same Datafeed layer feeds both, so the migration is a component swap, not a data rewrite.
+
+**Per-screen chart usage**
+
+| Screen | Chart surface | Library in v1 |
+|---|---|---|
+| 1 · Market | Home-index chart with ADX, 50 SMA, 200 SMA overlays. Medium embed (~400px tall). | lightweight-charts |
+| 2 · Screening | Inline sparkline per result row (60×20 px, last 20 days, colored by direction). | lightweight-charts (minimal) |
+| 4 · Trade plan | Full candle + volume chart for the selected trade row, with entry / stop / target price lines. Timeframe selector (1m / 5m / 15m / 1h / 4h / 1D / 1W). | lightweight-charts |
+| 5 · Backtest, equity curve | Line chart, in-sample vs. out-of-sample shaded separately. | lightweight-charts |
+| 5 · Backtest, trade replay | Candle chart with entry / exit markers, optional bar-by-bar playback. | lightweight-charts |
+
+**Indicator set (v1).** Only indicators the quant engine actually uses, so the chart and the algorithm stay in sync:
+
+- Moving averages: SMA(20), SMA(50), SMA(200), EMA(20).
+- ADX(14) — trend strength (shown as subchart).
+- Bollinger Bands + Keltner Channels — for the squeeze filter.
+- VWAP — intraday reference level.
+- Volume — always shown as histogram subchart.
+
+No RSI, MACD, Ichimoku, etc. in v1 — we add them when the engine actually references them. Keeps the chart honest about what the algorithm considered.
+
+**Price lines for trade plans (Screen 4).** Three persistent horizontal lines per trade: entry (neutral), stop (red, below for longs / above for shorts), target (green). Labels render at the right edge with the price value. Uses `createPriceLine()` in lightweight-charts; migrates to `createShape({shape: 'horizontal_line'})` in the Advanced Charts port.
+
+**Trade replay markers (Screen 5).** Buy/sell markers on the time axis at the trade's entry and exit bars. Uses `setMarkers()` in lightweight-charts.
+
+**Timeframe selector.** Seven buttons: 1m, 5m, 15m, 1h, 4h, 1D, 1W. Default per surface: 1D for Screens 1, 2, and 5; 5m or 15m for Screen 4 depending on `horizon` (Intraday → 5m, Swing → 1D).
+
+**Data consistency requirement.** This is the one hard rule regardless of library: chart bars must come from the same vendor and normalization as the quant engine used for the analysis. If Screen 4 shows a trade computed on Futu bars, the chart must render Futu bars. If the backtest ran on yfinance bars, the replay chart must render yfinance bars. Build the chart's datafeed adapter on top of the same `DataflowProvider` interface the engine uses — do not let the chart reach into a separate data path.
+
+**Drawing tools in v1: read-only.** lightweight-charts does not ship persistent drawing tools. In v1 users cannot draw on the chart. If they ask, the answer is "drawings will arrive with the Advanced Charts upgrade — until then, use the Futu app for discretionary markup." Document this explicitly in Settings → Charts so users aren't surprised.
+
+**Migration contract for v2.** When Advanced Charts lands:
+
+- Same indicator set stays default; the extended catalog is opt-in via a Settings toggle (`Show all indicators`), off by default, so the strategy-alignment property is preserved.
+- Entry/stop/target lines migrate from `PriceLine` to Advanced Charts shapes. No change to call sites — wrap both behind a `TradingChart` component interface that takes `{entry, stop, target}` props.
+- Drawing tools get enabled in Screen 4 and Screen 5. Drawings persist per `{ticker, timeframe}` in local storage.
+- Pine Script: not enabled in v2 by default; gate behind an advanced setting so classroom students aren't overwhelmed.
+
 ---
 
-## 8. What this unlocks vs. today
+## 10. What this unlocks vs. today
 
 | Today | With this design |
 |---|---|
 | User must already know which ticker to analyze. | Workflow starts from market regime and finds tickers for them. |
 | One ticker at a time, one analysis at a time. | Batch analysis across a screened basket. |
 | Output is a narrative report + a rating. | Output is a concrete trade plan with entries, stops, sizes, total exposure. |
-| No way to validate that the whole pipeline works historically. | Walk-forward backtest at the full-workflow level, not just the quant signal. |
+| No way to validate today's workflow decisions historically. | Walk-forward validates the deterministic trade plan artifact generated by the workflow, using a quant-strict replay engine. |
 | `entry_mode` is a config setting the user rarely changes. | Driven by today's regime, with a visible reason. |
 
 ---
 
-## 9. Decisions (v1 scope)
+## 11. Decisions (v1 scope)
 
 1. **Live prices.** Screen 1 streams live. Needs a WebSocket (or polled quote feed) from the market-data provider, with a "Delayed 15 min" fallback banner when live data is unavailable. Engineering impact: the Market screen needs a streaming transport that the other screens don't. Build that layer as a standalone service so Screens 2–5 can stay request/response.
 2. **Broker integration: Futu / moomoo.** One-click `Send to Futu` stages orders via the Futu OpenD gateway. Orders are staged, not submitted — the user still hits submit in Futu. Keeps us on the right side of "no autonomous trade execution." CSV export stays as a fallback for users without Futu.
 3. **Short selling: enabled by default.** Screen 4 sizes and places short trades just like longs. Gross exposure (longs + shorts) is shown separately from net (longs − shorts). Stops on shorts sit above entry. Requires a margin-enabled Futu account with shorting permissions on the specific ticker — surface that requirement in the confirm dialog, not as a silent failure.
-4. **Backtest: quant-strict, no LLM.** Walk-forward and full-history backtests run the deterministic quant signal only — the 5-agent LLM pipeline never runs in backtest mode. Makes multi-year walk-forwards take minutes instead of hours and removes run-to-run variance. The UI names this explicitly (mode banner) so users know live results can diverge.
+4. **Backtest: quant-strict, no LLM.** Walk-forward and full-history backtests replay a frozen strategy artifact under the deterministic quant engine only — the 5-agent LLM pipeline never runs in backtest mode. This validates the workflow output without re-running the workflow itself, keeps runtimes to minutes instead of hours, and removes run-to-run variance. The UI names this explicitly so users know live LLM-assisted results can diverge.
 5. **Portfolio size: per-strategy.** Portfolio size and risk-per-trade are saved with the strategy preset, not globally. A user can have a $10k "small account breakout" preset alongside a $100k "main account swing" preset. Means the saved-strategy schema needs `portfolio_size` and `risk_per_trade` as first-class fields.
 6. **Desktop only.** Layout can assume ≥1280px. No responsive breakpoints, no mobile nav, no touch targets. Table-heavy screens (Screens 2 and 4) can use multi-column layouts without collapse.
 
@@ -526,3 +762,6 @@ Primary labels in the user's `output_language`. Parenthetical English terms kept
 - Short-selling path in `OrderIntentContract` and sizing logic; surface the permission check before the confirm dialog so failure messages are actionable.
 - Backtest engine wired to `execution_mode="quant_strict"` at the run level, with a hard guard that the LLM client is never constructed during a backtest run.
 - Strategy preset schema: add `portfolio_size`, `risk_per_trade`, and `allow_shorts` fields. Migrate any existing presets by inheriting from a global default on first load.
+- Build a shared `TradingChart` React component backed by lightweight-charts in v1. Exposes a library-agnostic prop surface (`{symbol, timeframe, bars, indicators, priceLines, markers}`) so swapping to Advanced Charts in v2 is a single implementation change.
+- Build a `ChartDatafeed` adapter that pulls bars from the same `DataflowProvider` the quant engine uses — never a separate data path. Caches per `(symbol, timeframe, range)` in memory with a TTL that matches the engine's cache.
+- Submit the TradingView Advanced Charts license application now, in parallel with v1 development. The migration is a component swap, not a rewrite, and can land as soon as the license arrives.
