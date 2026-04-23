@@ -31,6 +31,11 @@ Behavior:
       0,1,4 -> Claude
       2,3,5 -> Copilot (manual)
       6     -> Codex
+      7     -> Claude
+      8     -> Codex
+      9,11  -> Claude
+      10,13 -> Codex
+      12    -> Copilot (manual)
   - Saves timestamped review artifacts under reviews/phase-<N>/
   - Updates latest aliases for compatibility:
       reviews/phase-<N>-review.md
@@ -57,7 +62,12 @@ reviewer_for_phase() {
     0|1|4) echo "claude" ;;
     2|3|5) echo "copilot" ;;
     6) echo "codex" ;;
-    *) die "Phase must be 0..6" ;;
+    7) echo "claude" ;;
+    8) echo "codex" ;;
+    9|11) echo "claude" ;;
+    10|13) echo "codex" ;;
+    12) echo "copilot" ;;
+    *) die "Phase must be 0..13" ;;
   esac
 }
 
@@ -70,6 +80,13 @@ scope_for_phase() {
     4) echo "Order lifecycle state machine; idempotency; pre-trade guard ordering; paper slippage fidelity." ;;
     5) echo "LLM support remains non-execution; malformed output safety; binary anomaly flags." ;;
     6) echo "No lookahead bias; realistic friction model; walk-forward leakage checks." ;;
+    7) echo "Trade-review consultant remains advisory-only; no executable fields or order mutation path." ;;
+    8) echo "Quant merge integrity, compact-context correctness, and token telemetry without execution-path regressions." ;;
+    9) echo "UX workflow tooling and backend API contracts; phase routing, route skeletons, and typed request/response boundaries." ;;
+    10) echo "SQLite schema initialization, persistence correctness, settings/watchlists/presets/history metadata, and archive compatibility." ;;
+    11) echo "Deterministic market/screening/batch/strategy/backtest orchestration; Futu stage-only adapter; no LLM construction in backtests." ;;
+    12) echo "Desktop workflow UI behavior, API integration, user-visible state/copy, and frontend test/build stability." ;;
+    13) echo "End-to-end hardening across UX workflow phases; regression coverage, compatibility, and final handoff quality." ;;
   esac
 }
 
@@ -82,6 +99,13 @@ non_goals_for_phase() {
     4) echo "Do not rework quant signal generation or regime logic semantics." ;;
     5) echo "Do not allow LLM output to affect order submission paths." ;;
     6) echo "Do not change production execution routes; focus on validation only." ;;
+    7) echo "Do not wire consultant output into execution, broker, risk gate, or portfolio mutation paths." ;;
+    8) echo "Do not redesign prompts or trading strategy behavior beyond compact handoff/token objectives." ;;
+    9) echo "Do not implement full UI styling or production data-provider depth; focus on stable phase contracts and route shape." ;;
+    10) echo "Do not add an ORM or migrate large markdown reports into SQLite; store metadata and paths only." ;;
+    11) echo "Do not submit live broker orders or run LLMs from backtest routes." ;;
+    12) echo "Do not add mobile layouts or change quant/backend contracts without coordinating the owning phase." ;;
+    13) echo "Do not expand product scope beyond the v1 desktop workflow described in docs/ux-design-daytrade-workflow.md." ;;
   esac
 }
 
@@ -172,7 +196,7 @@ fi
 
 PHASE="$1"
 BASE_REF="${2:-main}"
-[[ "$PHASE" =~ ^[0-6]$ ]] || die "Phase must be integer 0..6"
+[[ "$PHASE" =~ ^([0-9]|1[0-3])$ ]] || die "Phase must be integer 0..13"
 
 mkdir -p "$OUT_DIR"
 

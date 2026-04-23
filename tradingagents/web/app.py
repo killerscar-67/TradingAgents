@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from tradingagents.web.routes.analysis import router as analysis_router
 from tradingagents.web.routes.consultant import router as consultant_router
 from tradingagents.web.routes.models import router as models_router
+from tradingagents.web.routes.workflow import router as workflow_router
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent / "web" / "dist"
 
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis_router)
     app.include_router(consultant_router)
     app.include_router(models_router)
+    app.include_router(workflow_router)
 
     # Serve built frontend when dist/ exists (production local use)
     if _FRONTEND_DIST.is_dir():

@@ -61,3 +61,112 @@ class AnalysisRun:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         return d
+
+
+@dataclass
+class MarketOverview:
+    home_market: str
+    trade_date: str
+    status: str
+    indices: List[Dict[str, Any]]
+    regime: Dict[str, Any]
+    breadth: Dict[str, Any]
+    sectors: List[Dict[str, Any]]
+    events: List[Dict[str, Any]]
+    regions: Dict[str, Dict[str, Any]]
+    stream: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ScreeningRun:
+    run_id: str
+    universe: str
+    strategy: str
+    trade_date: str
+    min_score: float
+    top_n: int
+    filters: Dict[str, Any]
+    regime: Dict[str, Any]
+    results: List[Dict[str, Any]]
+    created_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class TickerBasket:
+    basket_id: str
+    name: str
+    symbols: List[str]
+    items: List[Dict[str, Any]]
+    created_at: str
+    source_screening_run_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AnalysisBatch:
+    batch_id: str
+    status: str
+    items: List[Dict[str, Any]]
+    created_at: str
+    updated_at: str
+    basket_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class TradePlan:
+    strategy_id: str
+    name: str
+    mode: str
+    horizon: str
+    portfolio_size: float
+    risk_per_trade: float
+    allow_shorts: bool
+    trades: List[Dict[str, Any]]
+    exposure: Dict[str, Any]
+    risk: Dict[str, Any]
+    created_at: str
+    source_batch_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class StrategyPreset:
+    preset_id: str
+    name: str
+    portfolio_size: float
+    risk_per_trade: float
+    allow_shorts: bool
+    config: Dict[str, Any]
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class BacktestRun:
+    backtest_id: str
+    status: str
+    config: Dict[str, Any]
+    result: Dict[str, Any]
+    created_at: str
+    strategy_id: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
