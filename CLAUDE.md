@@ -115,3 +115,13 @@ Claude Code should add compact `analysis_brief` state, report brief extraction, 
 Do not edit the quant engine, execution contracts, backtest sizing, dataflow output compaction, or CLI telemetry for Phase 8 unless `plan-quantStrictDaytradeArchitecture.prompt.md` is updated to coordinate the overlap. Use fake LLMs for graph/unit tests unless testing provider adapters. Keep test coverage focused on compact briefs, capped debate history with latest-turn preservation, and full-mode compatibility.
 
 Token-saving workflow: use `rg` before opening files, read focused line ranges, do not paste full reports/logs/generated JSON into prompts, summarize findings with file paths, and run focused tests before full discovery.
+
+## Phase 9 Scope — Local Web UI (FastAPI + React)
+
+Plan at `/Users/josephwong/.claude/plans/optimized-scribbling-leaf.md`. A shared `AnalysisRunner` service in `tradingagents/web/runner.py` wraps the CLI streaming loop so both CLI and FastAPI share one implementation. Do not add auth, broker mutations, or cancellation UI in v1.
+
+Key CLI internals needed before touching the web layer:
+- Streaming loop: `cli/main.py` ~line 1231 — `graph.graph.stream()`, `stream_mode="values"`
+- Report saving: `save_report_to_disk()` in `cli/main.py`; writes numbered subdirs (`1_analysts/`, `2_research/`, ...) + `complete_report.md` under `results_dir/<TICKER>/<DATE>/`
+- Stats tracking: `cli/stats_handler.py` — `StatsCallbackHandler` passed as LangChain callback
+- Consultant: `chat_trade_review(llm, context, messages)` at `tradingagents/agents/utils/llm_support.py:161`; returns `TradeReviewResponse`; advisory only — strip `blocking` field from API responses

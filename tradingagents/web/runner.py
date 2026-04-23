@@ -1,0 +1,455 @@
+"""Shared analysis runner for CLI and web UI (Phase 9).
+
+AnalysisRunner owns the LangGraph streaming loop, event emission, and
+run_state.json persistence.  The CLI calls run_sync(); FastAPI calls
+run_background() which drives run_sync() in a thread.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+import queue
+import threading
+import traceback
+import uuid
+from dataclasses import fields
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.web.models import AnalysisRun, RunStatus, SseEvent
+
+
+# Sentinel placed in per-run event queues when the run is done.
+_DONE = object()
+
+# Registry: run_id -> (AnalysisRun, Queue[SseEvent | _DONE])
+_registry: Dict[str, tuple] = {}
+_registry_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def create_run(
+    ticker: str,
+    analysis_date: str,
+    selected_analysts: List[str],
+    execution_mode: str,
+    llm_provider: str,
+    deep_think_llm: str,
+    quick_think_llm: str,
+) -> AnalysisRun:
+    run_id = str(uuid.uuid4())
+    run = AnalysisRun(
+        run_id=run_id,
+        ticker=ticker,
+        analysis_date=analysis_date,
+        selected_analysts=selected_analysts,
+        execution_mode=execution_mode,
+        llm_provider=llm_provider,
+        deep_think_llm=deep_think_llm,
+        quick_think_llm=quick_think_llm,
+        created_at=_now(),
+    )
+    q: queue.Queue = queue.Queue()
+    with _registry_lock:
+        _registry[run_id] = (run, q)
+    return run
+
+
+def get_run(run_id: str) -> Optional[AnalysisRun]:
+    with _registry_lock:
+        entry = _registry.get(run_id)
+    if entry:
+        return entry[0]
+    return load_run_from_disk(run_id)
+
+
+def get_event_queue(run_id: str) -> Optional[queue.Queue]:
+    with _registry_lock:
+        entry = _registry.get(run_id)
+    return entry[1] if entry else None
+
+
+def run_background(run_id: str, config: Optional[Dict[str, Any]] = None) -> None:
+    """Start analysis in a daemon thread; returns immediately."""
+    t = threading.Thread(target=_run_thread, args=(run_id, config), daemon=True)
+    t.start()
+
+
+def list_runs() -> List[AnalysisRun]:
+    """Return known web runs from memory and persisted run_state.json files."""
+    runs: Dict[str, AnalysisRun] = {}
+    for run in _load_runs_from_disk():
+        runs[run.run_id] = run
+
+    with _registry_lock:
+        for run, _ in _registry.values():
+            runs[run.run_id] = run
+
+    return sorted(
+        runs.values(),
+        key=lambda r: r.completed_at or r.started_at or r.created_at,
+        reverse=True,
+    )
+
+
+def load_run_from_disk(run_id: str) -> Optional[AnalysisRun]:
+    """Load a persisted run into memory so archived reports can be revisited."""
+    for run in _load_runs_from_disk():
+        if run.run_id == run_id:
+            _register_run(run)
+            return run
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Core streaming loop — shared by CLI (run_sync) and background thread
+# ---------------------------------------------------------------------------
+
+def run_sync(
+    run_id: str,
+    config: Optional[Dict[str, Any]] = None,
+    on_chunk: Optional[Callable[[Dict[str, Any]], None]] = None,
+    on_event: Optional[Callable[[SseEvent], None]] = None,
+    _graph_factory: Optional[Callable] = None,
+    _stats_factory: Optional[Callable] = None,
+    _save_report: Optional[Callable] = None,
+) -> Optional[AnalysisRun]:
+    """Drive the LangGraph stream and call on_chunk/on_event for each update.
+
+    Returns the final AnalysisRun (or None if run_id unknown).
+    """
+    run = get_run(run_id)
+    if run is None:
+        return None
+
+    cfg = dict(DEFAULT_CONFIG)
+    if config:
+        cfg.update(config)
+
+    cfg["llm_provider"] = run.llm_provider
+    cfg["deep_think_llm"] = run.deep_think_llm
+    cfg["quick_think_llm"] = run.quick_think_llm
+    cfg["execution_mode"] = run.execution_mode
+
+    if _graph_factory is None:
+        # Lazy import so web module can be imported without installing all deps.
+        from tradingagents.graph.trading_graph import TradingAgentsGraph as GraphClass
+    else:
+        GraphClass = _graph_factory
+
+    if _stats_factory is None:
+        from cli.stats_handler import StatsCallbackHandler as StatsClass
+    else:
+        StatsClass = _stats_factory
+
+    if _save_report is None:
+        from cli.main import save_report_to_disk as save_fn
+    else:
+        save_fn = _save_report
+
+    _update_run(run, status="running", started_at=_now())
+    _emit(run_id, "status", {"status": "running"})
+
+    stats_handler = StatsClass()
+
+    try:
+        graph = GraphClass(
+            selected_analysts=run.selected_analysts,
+            config=cfg,
+        )
+
+        init_state = graph.propagator.create_initial_state(run.ticker, run.analysis_date)
+        args = graph.propagator.get_graph_args(callbacks=[stats_handler])
+
+        seq = [0]
+        trace = []
+
+        for chunk in graph.graph.stream(init_state, **args):
+            trace.append(chunk)
+
+            # Emit agent/report events derived from chunk
+            _process_chunk(run_id, chunk, seq)
+
+            if on_chunk:
+                on_chunk(chunk)
+
+        final_state = trace[-1] if trace else {}
+
+        # Build order intent
+        order_intent: Dict[str, Any] = {}
+        final_decision = final_state.get("final_trade_decision", "")
+        if final_decision:
+            try:
+                intent_dict = graph.build_order_intent(
+                    run.ticker,
+                    run.analysis_date,
+                    final_decision,
+                )
+                order_intent = intent_dict if isinstance(intent_dict, dict) else intent_dict.to_dict()
+            except Exception:
+                pass
+
+        # Collect report sections
+        report_section_keys = [
+            "market_report",
+            "sentiment_report",
+            "news_report",
+            "fundamentals_report",
+            "investment_plan",
+            "trader_investment_plan",
+            "final_trade_decision",
+        ]
+        for key in report_section_keys:
+            val = final_state.get(key)
+            if val:
+                run.report_sections[key] = val
+
+        # Debate sections
+        inv_debate = final_state.get("investment_debate_state") or {}
+        if isinstance(inv_debate, dict):
+            for sub in ("bull_history", "bear_history", "judge_decision"):
+                val = inv_debate.get(sub)
+                if val:
+                    run.report_sections[f"investment_debate_{sub}"] = val
+
+        risk_debate = final_state.get("risk_debate_state") or {}
+        if isinstance(risk_debate, dict):
+            for sub in ("aggressive_history", "conservative_history", "neutral_history", "judge_decision"):
+                val = risk_debate.get(sub)
+                if val:
+                    run.report_sections[f"risk_debate_{sub}"] = val
+
+        # Save reports to disk
+        results_dir = Path(cfg.get("results_dir", DEFAULT_CONFIG["results_dir"])).expanduser()
+        web_run_dir = results_dir / run.ticker / run.analysis_date / "web_runs" / run_id
+        reports_dir = web_run_dir / "reports"
+        try:
+            save_fn(final_state, run.ticker, reports_dir)
+            run.report_paths = {
+                str(p.relative_to(reports_dir)): str(p)
+                for p in reports_dir.rglob("*.md")
+            }
+        except Exception:
+            pass
+
+        run.stats = stats_handler.get_stats()
+        run.final_order_intent = order_intent or None
+
+        _emit(run_id, "final_state", {
+            "order_intent": order_intent,
+            "stats": run.stats,
+        })
+        _update_run(run, status="completed", completed_at=_now())
+        _emit(run_id, "status", {"status": "completed"})
+
+        # Persist run state
+        _write_run_state(run, web_run_dir)
+
+    except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
+        run.errors.append(error_msg)
+        _emit(run_id, "error", {"message": error_msg})
+        _update_run(run, status="error", completed_at=_now())
+        _emit(run_id, "status", {"status": "error"})
+        _write_run_state(run, _fallback_run_dir(cfg, run))
+
+    finally:
+        q = get_event_queue(run_id)
+        if q is not None:
+            q.put(_DONE)
+
+    if on_event:
+        pass  # on_event is called inside _emit — nothing extra needed
+
+    return run
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _run_thread(run_id: str, config: Optional[Dict[str, Any]]) -> None:
+    run_sync(run_id, config=config)
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _update_run(run: AnalysisRun, **kwargs: Any) -> None:
+    for k, v in kwargs.items():
+        setattr(run, k, v)
+
+
+def _emit(run_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+    q = get_event_queue(run_id)
+    if q is None:
+        return
+    with _registry_lock:
+        entry = _registry.get(run_id)
+        if entry is None:
+            return
+        run, _ = entry
+        # Use a simple incrementing counter stored on the run object
+        seq = getattr(run, "_seq", 0)
+        seq += 1
+        object.__setattr__(run, "_seq", seq) if hasattr(run, "__slots__") else setattr(run, "_seq", seq)
+
+    event = SseEvent(
+        type=event_type,  # type: ignore[arg-type]
+        run_id=run_id,
+        sequence=seq,
+        payload=payload,
+    )
+    q.put(event)
+    _append_event_to_log(run_id, event)
+
+
+def _process_chunk(run_id: str, chunk: Dict[str, Any], seq: list) -> None:
+    """Derive and emit typed events from a LangGraph state chunk."""
+    # Agent reports
+    report_map = {
+        "market_report": "Market Analyst",
+        "sentiment_report": "Social Analyst",
+        "news_report": "News Analyst",
+        "fundamentals_report": "Fundamentals Analyst",
+        "trader_investment_plan": "Trader",
+    }
+    for key, agent_name in report_map.items():
+        if chunk.get(key):
+            _emit(run_id, "report_section", {"key": key, "content": chunk[key]})
+            _emit(run_id, "agent_status", {"agent": agent_name, "status": "completed"})
+
+    # Research debate
+    inv = chunk.get("investment_debate_state")
+    if inv and isinstance(inv, dict):
+        for sub_key in ("bull_history", "bear_history", "judge_decision"):
+            if inv.get(sub_key):
+                _emit(run_id, "report_section", {
+                    "key": f"investment_debate_{sub_key}",
+                    "content": inv[sub_key],
+                })
+        if inv.get("judge_decision"):
+            _emit(run_id, "agent_status", {"agent": "Research Manager", "status": "completed"})
+
+    # Risk debate
+    risk = chunk.get("risk_debate_state")
+    if risk and isinstance(risk, dict):
+        for sub_key in ("aggressive_history", "conservative_history", "neutral_history", "judge_decision"):
+            if risk.get(sub_key):
+                _emit(run_id, "report_section", {
+                    "key": f"risk_debate_{sub_key}",
+                    "content": risk[sub_key],
+                })
+        if risk.get("judge_decision"):
+            _emit(run_id, "agent_status", {"agent": "Portfolio Manager", "status": "completed"})
+
+    # Final decision
+    if chunk.get("final_trade_decision"):
+        _emit(run_id, "report_section", {
+            "key": "final_trade_decision",
+            "content": chunk["final_trade_decision"],
+        })
+
+    # Messages
+    for msg in chunk.get("messages", []):
+        content = getattr(msg, "content", None)
+        if content and str(content).strip():
+            _emit(run_id, "message", {
+                "role": type(msg).__name__.replace("Message", "").lower(),
+                "content": str(content)[:2000],
+            })
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        for tc in tool_calls:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+            args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+            _emit(run_id, "tool_call", {"name": name, "args": args})
+
+
+def _write_run_state(run: AnalysisRun, run_dir: Path) -> None:
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        state_file = run_dir / "run_state.json"
+        data = run.to_dict()
+        data.pop("_seq", None)
+        state_file.write_text(json.dumps(data, indent=2, default=str))
+    except Exception:
+        pass
+
+
+def _append_event_to_log(run_id: str, event: SseEvent) -> None:
+    run = get_run(run_id)
+    if run is None:
+        return
+    cfg = DEFAULT_CONFIG
+    results_dir = Path(cfg.get("results_dir", "~/.tradingagents/logs")).expanduser()
+    log_file = (
+        results_dir / run.ticker / run.analysis_date / "web_runs" / run_id / "events.ndjson"
+    )
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a") as f:
+            f.write(json.dumps(event.to_dict(), default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _fallback_run_dir(cfg: Dict[str, Any], run: AnalysisRun) -> Path:
+    results_dir = Path(cfg.get("results_dir", "~/.tradingagents/logs")).expanduser()
+    return results_dir / run.ticker / run.analysis_date / "web_runs" / run.run_id
+
+
+def _register_run(run: AnalysisRun) -> None:
+    with _registry_lock:
+        if run.run_id not in _registry:
+            _registry[run.run_id] = (run, queue.Queue())
+
+
+def _load_runs_from_disk() -> List[AnalysisRun]:
+    results_dir = Path(DEFAULT_CONFIG.get("results_dir", "~/.tradingagents/logs")).expanduser()
+    if not results_dir.exists():
+        return []
+
+    runs: List[AnalysisRun] = []
+    for state_file in results_dir.rglob("run_state.json"):
+        run = _read_run_state(state_file)
+        if run is not None:
+            runs.append(run)
+    return runs
+
+
+def _read_run_state(state_file: Path) -> Optional[AnalysisRun]:
+    try:
+        raw = json.loads(state_file.read_text())
+        allowed = {f.name for f in fields(AnalysisRun)}
+        data = {k: v for k, v in raw.items() if k in allowed}
+        return AnalysisRun(**data)
+    except Exception:
+        return None
+
+
+def load_events_from_disk(run_id: str) -> list:
+    """Replay stored events from events.ndjson (for SSE reconnect)."""
+    run = get_run(run_id)
+    if run is None:
+        return []
+    results_dir = Path(DEFAULT_CONFIG.get("results_dir", "~/.tradingagents/logs")).expanduser()
+    log_file = (
+        results_dir / run.ticker / run.analysis_date / "web_runs" / run_id / "events.ndjson"
+    )
+    if not log_file.exists():
+        return []
+    events = []
+    for line in log_file.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return events
