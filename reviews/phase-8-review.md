@@ -214,17 +214,17 @@ tradingagent_venv/bin/python -m unittest tests.test_compact_context tests.test_e
 
 Result: 51 tests, OK.
 
-Claude Code re-review result:
+Historical Claude Code re-review result before the later fix pass:
 
-- P1 remains open: `portfolio_manager.py` still injects full raw report context in `context_mode="full"` through the `Analysis Summary` block.
-- P1 remains open in the same compatibility category: `trader.py` still injects raw report context in full mode through `Analysis Summary`.
-- P2 remains open: `brief_max_chars`, `debate_max_chars`, and `debate_preserve_chars` are still not wired into helper calls.
-- P2 remains open: `_FakeLLM` in `tests/test_compact_context.py` still does not capture prompts, so prompt content is not asserted.
-- M-2 remains open: `context_mode` still defaults to `"full"` instead of `"compact"`.
+- P1 was open for `portfolio_manager.py` full-mode prompt compatibility.
+- P1 was open for `trader.py` full-mode prompt compatibility.
+- P2 was open for compact-context cap wiring.
+- P2 was open for prompt-capturing fake LLM assertions.
+- M-2 was open for compact mode not being the default.
 
-Per the plan: *"Do not create `docs/handoffs/phase-8.md` until Phase 8 implementation is complete and ready for review."*
+All five items are closed by the Claude Code re-review update below.
 
-`docs/handoffs/phase-8.md` was created prematurely. It should be removed or renamed to `docs/handoffs/history/phase-8/claude-code-lane.md` and kept as a staging note. The final handoff is written only after all three lanes pass the full discovery run.
+Resolved by the final review state below: all three lanes passed their gates, and `docs/handoffs/phase-8.md` is retained as the final Phase 8 handoff.
 
 ---
 
@@ -419,7 +419,7 @@ No open Claude Code findings remain.
 
 ---
 
-## Summary of required actions
+## Final action status
 
 | ID | Owner | Action |
 |---|---|---|
@@ -429,15 +429,15 @@ No open Claude Code findings remain.
 | **P2** | **Claude Code** | **DONE — `TestTraderCompact` now asserts prompt content in both modes (4 new tests)** |
 | **M-1** | **Claude Code** | **DONE — `"analysis_brief": {}` in `propagation.py:create_initial_state` (via Codex C-4)** |
 | **M-2** | **Claude Code** | **DONE — `context_mode` defaults to `"compact"` in `default_config.py` and `get_context_mode()`** |
-| C-1 | Codex | Add `QuantSignalContract.from_raw()` round-trip test in `test_quant_tool.py` |
-| C-2 | Codex | Add test asserting LLM is skipped when `Rating:` line is present |
-| C-3 | Codex | Add/confirm test asserting LLM is not called in `quant_strict` mode |
-| C-4 | Codex | Add `"analysis_brief": {}` to `propagation.py:create_initial_state` (cross-lane fix) |
-| C-5 | Codex | Run full `discover tests` regression gate after all lanes merge |
+| **C-1** | **Codex** | **DONE — `QuantSignalContract.from_raw()` round-trip test added in `test_quant_tool.py`** |
+| **C-2** | **Codex** | **DONE — conflicting `Rating:` lines raise before LLM fallback** |
+| **C-3** | **Codex** | **DONE — `quant_strict` order-intent test proves LLM text does not control rating** |
+| **C-4** | **Codex** | **DONE — `"analysis_brief": {}` added to `propagation.py:create_initial_state`** |
+| **C-5** | **Codex** | **DONE — full `discover tests` gate passed in review update** |
 | **CO-1** | **Copilot** | **DONE — `get_news_yfinance` cap note condition fixed and covered by boundary tests** |
 | **CO-2** | **Copilot** | **DONE — `get_global_news_yfinance` cap note condition fixed and covered by boundary tests** |
 | CO-3 | Copilot | DONE — backtest coverage added for real quant payload → `_coerce_entry_signal` → `size_position` |
 | CO-4 | Copilot | DONE — telemetry coverage added for stage inference, multi-call accumulation, unknown-scope fallback, and error cleanup |
 | CO-L1 | Copilot | PARTIAL — recent-row capping applied to OHLCV output; financial statement row order intentionally preserved |
 | CO-L2 | Copilot | DONE — `on_llm_error` drains `_pending_scopes`; `on_llm_end` also clears stale pending scopes before usage extraction |
-| — | All | Delete premature `docs/handoffs/phase-8.md`; re-create only after full gate passes |
+| **—** | **All** | **DONE — `docs/handoffs/phase-8.md` retained as the final Phase 8 handoff after all lanes passed review** |

@@ -19,20 +19,21 @@ This branch now contains implemented work from multiple Phase 8 lanes:
 | Function | Purpose |
 |---|---|
 | `get_context_mode()` | Reads `config["context_mode"]` (`"full"` or `"compact"`) |
+| `get_context_cfg()` | Reads compact-context mode and char budgets from config in one call |
 | `extract_brief(report, max_chars=400)` | Truncates a report string to `max_chars`, appends `…` |
 | `build_analysis_brief(market, sentiment, news, fundamentals, max_chars=400)` | Returns `dict` with keys `market/sentiment/news/fundamentals`, each truncated |
 | `cap_debate_history(history, max_chars=2000, preserve_latest_chars=600)` | Caps debate history: keeps tail verbatim, fills head budget, inserts gap marker |
 
 ### State (`tradingagents/agents/utils/agent_states.py`)
 
-Added `analysis_brief: Annotated[dict, ...]` to `AgentState`. Built lazily by the first downstream agent that runs; reused by all subsequent agents. Empty dict when `context_mode="full"` or before any agent has run.
+Added `analysis_brief: Annotated[dict, ...]` to `AgentState`. `Propagator.create_initial_state()` initializes it as `{}`. In compact mode, the first downstream agent builds the brief and subsequent agents reuse it. In full mode, downstream agents preserve the legacy full-report path and do not write `analysis_brief` updates.
 
 ### Config (`tradingagents/default_config.py`)
 
 New keys:
 
 ```python
-"context_mode":           "full"    # or "compact" (env: TRADINGAGENTS_CONTEXT_MODE)
+"context_mode":           "compact" # or "full" (env: TRADINGAGENTS_CONTEXT_MODE)
 "brief_max_chars":        400       # chars per brief entry
 "debate_max_chars":       2000      # max chars for debate history in prompt
 "debate_preserve_chars":  600       # latest chars always preserved verbatim
@@ -56,10 +57,10 @@ New keys:
 
 ### Agent updates
 
-All seven downstream agents updated to branch on `get_context_mode()`:
+All seven downstream agents updated to branch on compact-context config:
 
-- **`context_mode="full"`** (default): behaves identically to pre-Phase 8 — full reports passed, no `analysis_brief` written to state.
-- **`context_mode="compact"`**: uses `build_analysis_brief` / `cap_debate_history`; writes `analysis_brief` back to state so subsequent agents reuse it without rebuilding.
+- **`context_mode="compact"`** (default): uses `build_analysis_brief` / `cap_debate_history` with configured caps; writes `analysis_brief` back to state so subsequent agents reuse it without rebuilding.
+- **`context_mode="full"`**: preserves the pre-Phase-8 full-report prompt behavior; no `analysis_brief` update is written.
 
 Agents updated:
 
@@ -110,27 +111,29 @@ Existing aggregate totals are preserved and extended with per-agent / per-stage 
 
 ### Tests (`tests/test_compact_context.py`)
 
-31 tests, all green. Coverage:
+Focused compact-context coverage:
 
 - `extract_brief`: length, truncation, empty input
 - `build_analysis_brief`: keys, truncation, short pass-through
 - `cap_debate_history`: short/long/tail-preservation/empty
 - `get_context_mode`: default and override
 - Per-agent: compact brief written, full mode no-brief, brief reuse, count incremented
+- Prompt assertions: compact prompts contain briefs and omit full raw reports; full mode preserves legacy prompt shape
+- Config assertions: non-default brief and debate-history caps affect prompt size
 
 ### Additional focused validation
 
 - `tests/test_backtest.py`: verified the backtest still passes after swapping to risk-module sizing/stops reuse
 - `tests/test_risk.py`: verified the reused sizing/stop logic remains stable
 - `tests/test_execution.py`: confirmed execution guards and paper broker behavior stay unchanged
-- `tests/test_tool_output_caps.py`: 5 focused tests for output compaction
-- `tests/test_stats_handler.py`: 2 focused tests for per-agent / per-stage telemetry
+- `tests/test_tool_output_caps.py`: 7 focused tests for output compaction and cap-note boundaries
+- `tests/test_stats_handler.py`: 5 focused tests for per-agent / per-stage telemetry and error cleanup
 
 ---
 
 ## Backward compatibility
 
-`context_mode` defaults to `"full"`, so existing callers are unaffected. Set `TRADINGAGENTS_CONTEXT_MODE=compact` or pass `config={"context_mode": "compact"}` to activate.
+`context_mode` defaults to `"compact"` to reduce downstream prompt size. Set `TRADINGAGENTS_CONTEXT_MODE=full` or pass `config={"context_mode": "full"}` to restore the legacy full-report prompt path for comparison or compatibility checks.
 
 Tool-output compaction preserves existing return types and headers. Callers still receive strings in the same overall format; only oversized sections are truncated with an explicit cap note.
 
@@ -149,20 +152,23 @@ New consumers can additionally read `per_agent` and `per_stage` from `StatsCallb
 
 ```
 tradingagent_venv/bin/python -m unittest tests.test_compact_context -v
-# 31 tests, 0 failures
+# 40 tests, 0 failures
 
 tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
-# 16 tests, 0 failures
+# focused quant/model validation, 0 failures
 
 tradingagent_venv/bin/python -m unittest tests.test_backtest tests.test_risk -v
-# 84 tests, 0 failures
+# focused backtest/risk validation, 0 failures
 
 tradingagent_venv/bin/python -m unittest tests.test_tool_output_caps -v
-# 5 tests, 0 failures
+# 7 tests, 0 failures
 
 tradingagent_venv/bin/python -m unittest tests.test_stats_handler -v
-# 2 tests, 0 failures
+# 5 tests, 0 failures
 
 tradingagent_venv/bin/python -m unittest tests.test_backtest tests.test_risk tests.test_execution tests.test_tool_output_caps tests.test_stats_handler -v
-# 100 tests, 0 failures
+# 106 tests, 0 failures
+
+tradingagent_venv/bin/python -m unittest discover tests -v
+# 268 tests, 0 failures
 ```

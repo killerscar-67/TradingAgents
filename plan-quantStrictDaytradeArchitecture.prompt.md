@@ -113,6 +113,18 @@ tradingagent_venv/bin/python -m unittest tests.test_backtest tests.test_risk tes
 tradingagent_venv/bin/python -m unittest discover tests -v
 ```
 
+Implemented Phase 8 architecture:
+
+- Quant executable facts now flow through typed contracts: `get_quant_signals` prefers `run_quant_engine` when 15m/4h intraday bars are available and retains the daily MA/RSI path only as an explicit fallback.
+- `llm_assisted` final rating extraction first parses valid `Rating:` lines deterministically; LLM extraction is only the fallback. `quant_strict` continues to build executable order intent from `QuantSignalContract`.
+- Backtest sizing and stops reuse `tradingagents.quant.risk`, keeping replay and live strict-mode risk math aligned.
+- Tool outputs are capped at the dataflow boundary for OHLCV, indicators, fundamentals, financial statements, and news payloads.
+- Token telemetry preserves aggregate totals and adds per-agent/per-stage buckets.
+- Agent handoffs use compact `analysis_brief` context by default. `context_mode="full"` is the explicit legacy compatibility path and preserves full-report prompt behavior.
+- Compact-context size is controlled by `brief_max_chars`, `debate_max_chars`, and `debate_preserve_chars`.
+
+Remaining post-Phase-8 gates are operational validation, not missing phase implementation: keep the full unit suite green, run the deterministic quant-engine audit, run paper trading through the paper gate, and do not promote to live until the paper-gate criteria pass. Swing-lane implementation remains explicitly excluded for now.
+
 Conflict rules:
 
 - Do not edit another agent's owned files without updating this Phase 8 section first.

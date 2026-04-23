@@ -13,13 +13,14 @@
 5. Programmatic Usage
 6. System Architecture
 7. Execution Modes
-8. The Quant-Strict Pipeline
-9. LLM Support Modules (Non-Execution)
-10. Backtest and Validation Gates
-11. Key Contracts Reference
-12. Environment Variables
-13. Running Tests
-14. Project Layout
+8. Context and Token Controls
+9. The Quant-Strict Pipeline
+10. LLM Support Modules (Non-Execution)
+11. Backtest and Validation Gates
+12. Key Contracts Reference
+13. Environment Variables
+14. Running Tests
+15. Project Layout
 
 ---
 
@@ -73,11 +74,29 @@ All configuration lives in `DEFAULT_CONFIG` in default_config.py. Override by pa
 | `deep_think_llm` | `"gpt-5.4"` | `TRADINGAGENTS_DEEP_THINK_LLM` | Model for complex reasoning tasks |
 | `quick_think_llm` | `"gpt-5.4-mini"` | `TRADINGAGENTS_QUICK_THINK_LLM` | Model for quick tasks and extraction |
 | `execution_mode` | `"llm_assisted"` | `TRADINGAGENTS_EXECUTION_MODE` | `"llm_assisted"` or `"quant_strict"` |
+| `context_mode` | `"compact"` | `TRADINGAGENTS_CONTEXT_MODE` | `"compact"` uses brief handoffs by default; `"full"` restores legacy full-report prompts |
 | `output_language` | `"English"` | — | Language for analyst reports; internal debate always English |
 | `max_debate_rounds` | `1` | — | Researcher debate rounds |
 | `max_risk_discuss_rounds` | `1` | — | Risk management discussion rounds |
 | `results_dir` | `~/.tradingagents/logs` | `TRADINGAGENTS_RESULTS_DIR` | Output log directory |
 | `data_cache_dir` | `~/.tradingagents/cache` | `TRADINGAGENTS_CACHE_DIR` | Quant prefilter cache |
+
+### Context & Token Controls (Phase 8)
+
+Compact context is the default. Analyst reports are distilled into `analysis_brief` handoffs before downstream researcher, trader, risk, and portfolio prompts. Set `TRADINGAGENTS_CONTEXT_MODE=full` or `config["context_mode"] = "full"` only when you need the pre-Phase-8 full-report prompt shape.
+
+| Key | Default | Description |
+|---|---|---|
+| `brief_max_chars` | `400` | Maximum characters per market/sentiment/news/fundamentals brief |
+| `debate_max_chars` | `2000` | Maximum debate-history characters passed into downstream prompts |
+| `debate_preserve_chars` | `600` | Latest debate-history characters preserved verbatim when capping |
+| `tool_output_ohlcv_max_rows` | `120` | Maximum OHLCV rows returned by capped data tools |
+| `tool_output_indicator_max_points` | `30` | Maximum indicator points returned to agent prompts |
+| `tool_output_fundamentals_max_fields` | `18` | Maximum fundamentals fields included in tool output |
+| `tool_output_financial_max_rows` | `20` | Maximum financial-statement rows included |
+| `tool_output_financial_max_cols` | `4` | Maximum financial-statement columns included |
+| `tool_output_news_max_articles` | `8` | Maximum news articles included |
+| `tool_output_news_summary_max_chars` | `280` | Maximum characters per news summary |
 
 ### Intraday Data (Phase 1)
 
@@ -165,7 +184,7 @@ The summary table shows a **Blocked** column — blocked/errored signals are nev
 
 ## 5. Programmatic Usage
 
-### LLM-assisted mode (default)
+### LLM-assisted mode (default execution, compact context)
 
 ```python
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -175,11 +194,23 @@ config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "openai"
 config["deep_think_llm"] = "gpt-5.4"
 config["quick_think_llm"] = "gpt-5.4-mini"
+# context_mode defaults to "compact"; use "full" only for legacy prompt comparison.
 
 ta = TradingAgentsGraph(debug=True, config=config)
 final_state, order_intent = ta.propagate("NVDA", "2026-01-15")
 print(order_intent)
 # {"symbol": "NVDA", "rating": "BUY", "blocked": False, ...}
+```
+
+### Legacy full-report prompts
+
+```python
+config = DEFAULT_CONFIG.copy()
+config["context_mode"] = "full"
+
+ta = TradingAgentsGraph(config=config)
+final_state, order_intent = ta.propagate("NVDA", "2026-01-15")
+# downstream prompts use the legacy full-report context path
 ```
 
 ### Quant-strict mode
@@ -251,16 +282,20 @@ CLI / TradingAgentsGraph
         │
         ├── LangGraph Agent Pipeline (llm_assisted mode)
         │       ├── Analyst Team (market, sentiment, news, fundamentals)
+        │       ├── Compact Context Layer (default)
+        │       │       ├── analysis_brief handoffs
+        │       │       ├── debate-history capping
+        │       │       └── config-controlled tool-output caps
         │       ├── Researcher Team (bull/bear debate → research manager)
         │       ├── Trader Agent
         │       ├── Risk Management (aggressive/neutral/conservative → manager)
         │       └── Portfolio Manager → final approve/reject
         │
         ├── Signal Processor
-        │       ├── llm_assisted: TradeRating extracted from narrative via LLM
+        │       ├── llm_assisted: deterministic Rating: line parse, then LLM fallback
         │       └── quant_strict:  TradeRating from QuantSignalContract (deterministic)
         │
-        ├── Quant Engine (quant_strict mode only)
+        ├── Quant Engine
         │       ├── Phase 1: get_intraday_bars() — 15m + 4h with cache
         │       ├── Phase 2: regime.classify() → entry.run_entry() → validation.validate()
         │       ├── Phase 3: risk.size_position() + compute_stops() + check_risk_gates()
@@ -284,6 +319,7 @@ CLI / TradingAgentsGraph
 | trader | Trader agent |
 | risk_mgmt | Risk management team |
 | managers | Portfolio manager |
+| agent_utils.py | Shared agent helpers, compact context, tool imports |
 | llm_support.py | Non-execution LLM support helpers |
 | contracts.py | All typed execution contracts |
 | engine.py | Quant pipeline orchestrator |
@@ -306,7 +342,7 @@ CLI / TradingAgentsGraph
 
 | | `llm_assisted` (default) | `quant_strict` |
 |---|---|---|
-| Trade rating source | LLM extracts from narrative | `QuantSignalContract` from quant engine |
+| Trade rating source | Deterministic `Rating:` line parse, then LLM extraction fallback | `QuantSignalContract` from quant engine |
 | Deterministic? | No | Yes — identical inputs produce identical outputs |
 | LLM used in decision? | Yes | No |
 | Suitable for backtesting? | No | Yes |
@@ -316,7 +352,21 @@ Set via config key `execution_mode` or env var `TRADINGAGENTS_EXECUTION_MODE`.
 
 ---
 
-## 8. The Quant-Strict Pipeline
+## 8. Context and Token Controls
+
+Phase 8 makes compact context the normal agent handoff path:
+
+1. Analyst reports remain available in state as full text.
+2. The first downstream agent builds `analysis_brief` with market, sentiment, news, and fundamentals summaries.
+3. Later downstream agents reuse the same brief instead of re-prompting with repeated full reports.
+4. Debate histories are capped before prompt construction while preserving the latest turn.
+5. Tool outputs are capped at the dataflow boundary, so large OHLCV tables, indicators, financial statements, and news payloads do not flood prompts.
+
+Use `context_mode="full"` only for legacy behavior checks. In full mode, downstream prompts preserve the old full-report path and do not write `analysis_brief` updates.
+
+---
+
+## 9. The Quant-Strict Pipeline
 
 Each bar during live or backtest execution follows this sequence:
 
@@ -362,7 +412,7 @@ run_quant_engine(symbol, trade_date, bars_15m, bars_4h, config)
 
 ---
 
-## 9. LLM Support Modules (Non-Execution)
+## 10. LLM Support Modules (Non-Execution)
 
 These modules produce annotations for human review and journaling. They **cannot block, size, modify, or submit orders**.
 
@@ -379,7 +429,7 @@ All provider exceptions and malformed LLM responses are captured in the `error` 
 
 ---
 
-## 10. Backtest and Validation Gates
+## 11. Backtest and Validation Gates
 
 ### Backtest friction model
 
@@ -410,7 +460,7 @@ All three conditions must be met simultaneously (exactly at threshold fails):
 
 ---
 
-## 11. Key Contracts Reference
+## 12. Key Contracts Reference
 
 All contracts live in contracts.py and are exported from `tradingagents.quant`.
 
@@ -435,7 +485,7 @@ All contracts expose a `.to_dict()` method for serialisation.
 
 ---
 
-## 12. Environment Variables
+## 13. Environment Variables
 
 | Variable | Used for |
 |---|---|
@@ -462,7 +512,7 @@ Copy .env.example to .env and fill in your keys. For enterprise providers (Azure
 
 ---
 
-## 13. Running Tests
+## 14. Running Tests
 
 ```bash
 # Full test suite (all phases)
@@ -488,7 +538,7 @@ No live API keys are required for any test. All tests use mocked or synthetic da
 
 ---
 
-## 14. Project Layout
+## 15. Project Layout
 
 ```
 TradingAgents/
