@@ -377,6 +377,9 @@ class WorkflowContractTests(unittest.TestCase):
             )
             self.assertEqual(backtest.status_code, 200)
             backtest_body = backtest.json()
+            self.assertEqual(backtest_body["strategy_id"], strategy_body["strategy_id"])
+            self.assertEqual(backtest_body["start_date"], "2026-01-01")
+            self.assertEqual(backtest_body["end_date"], "2026-04-23")
             self.assertEqual(backtest_body["request"]["execution_mode"], "quant_strict")
             self.assertFalse(backtest_body["request"]["llm_constructed"])
             self.assertEqual(backtest_body["result"]["summary"]["symbols"], ["AAPL"])
@@ -455,10 +458,79 @@ class WorkflowContractTests(unittest.TestCase):
             )
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
+        self.assertEqual(body["strategy_id"], strategy["strategy_id"])
+        self.assertEqual(body["start_date"], "2026-01-01")
+        self.assertEqual(body["end_date"], "2026-04-23")
         self.assertEqual(body["request"]["execution_mode"], "quant_strict")
         self.assertFalse(body["request"]["llm_constructed"])
         self.assertEqual(body["result"]["summary"]["symbols"], ["AAPL"])
         create_run.assert_not_called()
+
+    def test_get_backtest_detail_returns_stored_record_and_404_for_unknown(self):
+        from tradingagents.web.storage import get_workflow_store
+
+        store = get_workflow_store()
+        strategy = store.create_strategy_plan(
+            {
+                "batch_id": "batch-detail",
+                "mode": "breakout",
+                "horizon": "intraday",
+                "portfolio_size": 100_000.0,
+                "risk_per_trade": 0.01,
+                "allow_shorts": True,
+            },
+            home_market="US",
+        )
+        store.update_strategy_plan(
+            strategy["strategy_id"],
+            result={
+                "trades": [
+                    {
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "direction": "long",
+                        "quantity": 10,
+                        "entry_price": 100.0,
+                        "stop_price": 95.0,
+                        "target_price": 110.0,
+                        "notional": 1_000.0,
+                        "entry_mode": "breakout",
+                    }
+                ],
+                "exposure": {},
+                "risk": {},
+            },
+        )
+
+        with patch("tradingagents.web.workflow_service.get_intraday_bars", return_value=_make_intraday_bars()), patch(
+            "tradingagents.web.workflow_service.run_trade_plan_backtest",
+            return_value=_FakeBacktestResult("AAPL", 52_500.0),
+        ):
+            created = self.client.post(
+                "/api/backtests",
+                json={
+                    "strategy_id": strategy["strategy_id"],
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-04-23",
+                },
+            )
+
+        self.assertEqual(created.status_code, 200)
+        created_body = created.json()
+
+        detail = self.client.get(f"/api/backtests/{created_body['backtest_id']}")
+        self.assertEqual(detail.status_code, 200)
+        detail_body = detail.json()
+        self.assertEqual(detail_body["backtest_id"], created_body["backtest_id"])
+        self.assertEqual(detail_body["strategy_id"], strategy["strategy_id"])
+        self.assertEqual(detail_body["start_date"], "2026-01-01")
+        self.assertEqual(detail_body["end_date"], "2026-04-23")
+        self.assertEqual(detail_body["status"], "completed")
+        self.assertEqual(detail_body["result"]["summary"]["symbols"], ["AAPL"])
+        self.assertIn("events", detail_body)
+
+        missing = self.client.get("/api/backtests/backtest-missing")
+        self.assertEqual(missing.status_code, 404)
 
     def test_saved_strategy_backtest_replays_frozen_trade_plan(self):
         from tradingagents.web.storage import get_workflow_store

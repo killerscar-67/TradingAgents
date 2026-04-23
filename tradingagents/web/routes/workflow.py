@@ -309,10 +309,21 @@ def create_backtest(req: BacktestRequest) -> Dict[str, Any]:
         "kind": "backtest_run",
         "status": backtest["status"],
         "backtest_id": backtest["backtest_id"],
+        "strategy_id": backtest.get("strategy_id"),
+        "start_date": backtest.get("start_date"),
+        "end_date": backtest.get("end_date"),
         "workflow_session_id": backtest["workflow_session_id"],
         "result": backtest.get("result", {}),
         "request": payload,
     }
+
+
+@router.get("/api/backtests/{backtest_id}")
+def get_backtest(backtest_id: str) -> Dict[str, Any]:
+    backtest = get_workflow_store().get_backtest_run(backtest_id)
+    if backtest is None:
+        raise HTTPException(status_code=404, detail="backtest not found")
+    return backtest
 
 
 @router.get("/api/backtests/{backtest_id}/events")

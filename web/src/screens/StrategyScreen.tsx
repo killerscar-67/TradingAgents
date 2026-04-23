@@ -1,0 +1,242 @@
+import { useState } from "react";
+import { useWorkflow } from "../contexts/WorkflowContext";
+import { TradingChart } from "../components/TradingChart";
+import { InheritedChip } from "../components/InheritedChip";
+import { Dialog } from "../components/Dialog";
+import type { TradePlan } from "../types";
+import styles from "./StrategyScreen.module.css";
+
+interface StrategyResponse {
+  strategy_id: string;
+  status: string;
+  trades?: Array<{
+    symbol: string;
+    side: "buy" | "sell";
+    direction: "long" | "short";
+    quantity: number;
+    entry_price: number;
+    stop_price: number;
+    target_price: number;
+    notional: number;
+    rating: string;
+    analysis_run_id?: string | null;
+  }>;
+  exposure?: {
+    gross_exposure_pct?: number;
+    net_exposure_pct?: number;
+  };
+  request?: {
+    batch_id?: string;
+    portfolio_size?: number;
+  };
+}
+
+function mapStrategyResponseToTradePlan(data: StrategyResponse): TradePlan {
+  const portfolioSize = Number(data.request?.portfolio_size ?? 100_000);
+  const entries: TradePlan["entries"] = (data.trades ?? []).map((trade) => ({
+    ticker: trade.symbol,
+    side: trade.side,
+    quantity: Number(trade.quantity ?? 0),
+    direction: trade.direction === "short" ? "SHORT" : "LONG",
+    entry: Number(trade.entry_price ?? 0),
+    stop: Number(trade.stop_price ?? 0),
+    target: Number(trade.target_price ?? 0),
+    size_pct: portfolioSize > 0
+      ? (Number(trade.notional ?? 0) / portfolioSize) * 100
+      : 0,
+    rating: trade.rating,
+    run_id: trade.analysis_run_id ?? "",
+  }));
+
+  return {
+    batch_id: data.request?.batch_id ?? "",
+    date: new Date().toISOString().split("T")[0],
+    entries,
+    exposure: {
+      gross: Number(data.exposure?.gross_exposure_pct ?? 0),
+      net: Number(data.exposure?.net_exposure_pct ?? 0),
+      long_count: entries.filter((entry) => entry.direction === "LONG").length,
+      short_count: entries.filter((entry) => entry.direction === "SHORT").length,
+    },
+    status: data.status,
+  };
+}
+
+export function StrategyScreen() {
+  const { batchId, strategyId, tradePlan, setStrategyId, setScreen } = useWorkflow();
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [stagingEntry, setStagingEntry] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLoadPlan = async () => {
+    if (!batchId) return;
+    setLoadingPlan(true);
+    setError(null);
+    try {
+      const resp = await fetch("/api/strategies/from-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data: StrategyResponse = await resp.json();
+      setStrategyId(data.strategy_id, mapStrategyResponseToTradePlan(data));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoadingPlan(false);
+    }
+  };
+
+  const openFutuDialog = (ticker: string) => {
+    setStagingEntry(ticker);
+    setDialogOpen(true);
+  };
+
+  const handleFutuConfirm = async () => {
+    setDialogOpen(false);
+    if (!tradePlan || !stagingEntry || !strategyId) return;
+    try {
+      const entry = tradePlan.entries.find((e) => e.ticker === stagingEntry);
+      if (!entry) {
+        throw new Error(`Unknown staged symbol ${stagingEntry}`);
+      }
+      const resp = await fetch("/api/broker/futu/stage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          orders: [
+            {
+              symbol: entry.ticker,
+              side: entry.side,
+              quantity: entry.quantity,
+              entry_price: entry.entry,
+            },
+          ],
+        }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      setToast(`Staged ${stagingEntry} in Futu — review inside the app before submitting.`);
+      setTimeout(() => setToast(null), 4000);
+    } catch (e) {
+      setToast(`Error staging: ${String(e)}`);
+      setTimeout(() => setToast(null), 4000);
+    }
+  };
+
+  if (!batchId) {
+    return (
+      <div className={styles.page}>
+        <header className={styles.header}>
+          <h1 className={styles.title}>Strategy</h1>
+        </header>
+        <div className={styles.empty}>Run a batch analysis first to generate a trade plan.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={styles.page}>
+      <header className={styles.header}>
+        <h1 className={styles.title}>Strategy</h1>
+        {batchId && (
+          <InheritedChip
+            label={`Setups from batch · ${new Date().toLocaleDateString()}`}
+          />
+        )}
+      </header>
+
+      {error && <div className={styles.error}>{error}</div>}
+
+      {toast && <div className={styles.toast}>{toast}</div>}
+
+      {!tradePlan ? (
+        <div className={styles.loadArea}>
+          <button className={styles.loadBtn} onClick={handleLoadPlan} disabled={loadingPlan}>
+            {loadingPlan ? "Loading plan…" : "Generate strategy from batch"}
+          </button>
+        </div>
+      ) : (
+        <div className={styles.planArea}>
+          <div className={styles.exposure}>
+            <div className={styles.exposureItem}>
+              <span className={styles.exposureValue}>{tradePlan.exposure.gross.toFixed(1)}%</span>
+              <span className={styles.exposureLabel}>Gross</span>
+            </div>
+            <div className={styles.exposureItem}>
+              <span className={styles.exposureValue}>{tradePlan.exposure.net.toFixed(1)}%</span>
+              <span className={styles.exposureLabel}>Net</span>
+            </div>
+            <div className={styles.exposureItem}>
+              <span className={styles.exposureValue}>{tradePlan.exposure.long_count}</span>
+              <span className={styles.exposureLabel}>Long</span>
+            </div>
+            <div className={styles.exposureItem}>
+              <span className={styles.exposureValue}>{tradePlan.exposure.short_count}</span>
+              <span className={styles.exposureLabel}>Short</span>
+            </div>
+          </div>
+
+          <div className={styles.chartArea}>
+            <TradingChart height={200} />
+          </div>
+
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th className={styles.th}>Ticker</th>
+                <th className={styles.th}>Direction</th>
+                <th className={styles.th}>Entry</th>
+                <th className={styles.th}>Stop</th>
+                <th className={styles.th}>Target</th>
+                <th className={styles.th}>Size %</th>
+                <th className={styles.th}>Rating</th>
+                <th className={styles.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {tradePlan.entries.map((entry) => (
+                <tr key={entry.ticker} className={styles.tr}>
+                  <td className={`${styles.td} ${styles.symbol}`}>{entry.ticker}</td>
+                  <td className={`${styles.td} ${entry.direction === "LONG" ? styles.long : styles.short}`}>
+                    {entry.direction}
+                  </td>
+                  <td className={styles.td}>{entry.entry.toFixed(2)}</td>
+                  <td className={styles.td}>{entry.stop.toFixed(2)}</td>
+                  <td className={styles.td}>{entry.target.toFixed(2)}</td>
+                  <td className={styles.td}>{entry.size_pct.toFixed(1)}%</td>
+                  <td className={styles.td}>{entry.rating}</td>
+                  <td className={styles.td}>
+                    <button
+                      className={styles.futuBtn}
+                      onClick={() => openFutuDialog(entry.ticker)}
+                    >
+                      Send to Futu
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <button className={styles.backtestBtn} onClick={() => setScreen("backtest")}>
+            Run backtest →
+          </button>
+        </div>
+      )}
+
+      <Dialog
+        open={dialogOpen}
+        title="Stage order in Futu"
+        onConfirm={handleFutuConfirm}
+        onCancel={() => setDialogOpen(false)}
+      >
+        Stage {stagingEntry ? `1 order (${stagingEntry})` : "order"} in your Futu account? These are
+        staged, not placed — you'll still need to review and submit inside Futu.
+      </Dialog>
+    </div>
+  );
+}

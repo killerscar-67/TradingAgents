@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ModelCatalog } from "../types";
 import styles from "./RunForm.module.css";
+import { Tooltip } from "./Tooltip";
 
 interface Props {
   onRunCreated: (runId: string) => void;
@@ -69,24 +70,6 @@ const FIELD_TIPS: Record<string, string> = {
   deep_model: "Used for slow, careful reasoning (researcher debates, risk review). Pick your most capable model here.",
   quick_model: "Used for fast, simple tasks (extracting the final rating, summarizing). A cheaper model is fine.",
 };
-
-function Tooltip({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span className={styles.tooltipWrap}>
-      <button
-        type="button"
-        className={styles.tooltipTrigger}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        aria-label="Help"
-      >?</button>
-      {open && <span className={styles.tooltipBox} role="tooltip">{text}</span>}
-    </span>
-  );
-}
 
 function formatError(raw: string): string {
   const msg = raw.replace(/^Error:\s*/, "");

@@ -1,0 +1,13 @@
+.shell {
+  display: flex;
+  min-width: 1280px;
+  height: 100vh;
+  background: #0f1117;
+  color: #e2e8f0;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}

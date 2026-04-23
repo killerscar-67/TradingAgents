@@ -1,0 +1,172 @@
+.page {
+  padding: 32px;
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.form {
+  margin-bottom: 28px;
+}
+
+.formRow {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.input {
+  background: #1e2433;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: #f1f5f9;
+  font-size: 14px;
+  width: 120px;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.runBtn {
+  padding: 8px 18px;
+  background: #1d4ed8;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.runBtn:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.runBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #f87171;
+}
+
+.resultsArea {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.resultsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.resultsCount {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.basketBtn {
+  padding: 7px 14px;
+  background: #065f46;
+  border: 1px solid #047857;
+  border-radius: 6px;
+  color: #4ade80;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.basketBtn:hover {
+  background: #064e38;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1e293b;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tr:hover {
+  background: #161b27;
+}
+
+.td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #0f1117;
+  color: #cbd5e1;
+}
+
+.symbol {
+  font-weight: 600;
+  color: #f8fafc;
+  font-family: monospace;
+}
+
+.removeBtn {
+  background: none;
+  border: none;
+  color: #475569;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.removeBtn:hover {
+  color: #f87171;
+}
+
+.empty {
+  padding-top: 80px;
+  text-align: center;
+  font-size: 14px;
+  color: #475569;
+}

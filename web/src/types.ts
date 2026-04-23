@@ -80,3 +80,158 @@ export interface ConsultantResponse {
   referenced_context_keys: string[];
   error: string | null;
 }
+
+// --- Phase 12: workflow screens ---
+
+export type Screen =
+  | "market"
+  | "screen"
+  | "batch"
+  | "strategy"
+  | "backtest"
+  | "history"
+  | "settings";
+
+export interface RegimeData {
+  label: string;
+  trend: string;
+  breadth: string;
+  volatility: string;
+  home_market: string;
+  as_of: string;
+  status: string;
+}
+
+export interface BreadthData {
+  advancing: number;
+  declining: number;
+  unchanged: number;
+}
+
+export interface IndexTile {
+  symbol: string;
+  name: string;
+  price: number;
+  change_pct: number;
+  status: string;
+}
+
+export interface MarketOverview {
+  regime: RegimeData;
+  indices: IndexTile[];
+  breadth: BreadthData;
+  status: string;
+}
+
+export interface ScreeningResult {
+  symbol: string;
+  score: number;
+  regime_label: string;
+  entry_mode: string;
+  status: string;
+}
+
+export interface BasketData {
+  screening_run_id: string;
+  symbols: string[];
+  regime: RegimeData | null;
+  created_at: string;
+  status: string;
+}
+
+export interface BatchItem {
+  ticker: string;
+  run_id: string | null;
+  status: "queued" | "running" | "completed" | "error";
+  rating: string | null;
+  error: string | null;
+}
+
+export interface TradeEntry {
+  ticker: string;
+  side: "buy" | "sell";
+  quantity: number;
+  direction: "LONG" | "SHORT";
+  entry: number;
+  stop: number;
+  target: number;
+  size_pct: number;
+  rating: string;
+  run_id: string;
+}
+
+export interface ExposureSummary {
+  gross: number;
+  net: number;
+  long_count: number;
+  short_count: number;
+}
+
+export interface TradePlan {
+  batch_id: string;
+  date: string;
+  entries: TradeEntry[];
+  exposure: ExposureSummary;
+  status: string;
+}
+
+export interface BacktestKpi {
+  total_return_pct: number;
+  sharpe: number;
+  max_drawdown_pct: number;
+  win_rate_pct: number;
+  num_trades: number;
+}
+
+export interface TradeLogEntry {
+  date: string;
+  ticker: string;
+  direction: string;
+  entry: number;
+  exit: number | null;
+  pnl_pct: number | null;
+  status: string;
+}
+
+export interface BacktestRun {
+  backtest_id: string;
+  strategy_id: string;
+  start_date: string;
+  end_date: string;
+  execution_mode: "quant_strict";
+  status: "queued" | "running" | "completed" | "error";
+  kpi: BacktestKpi | null;
+  trade_log: TradeLogEntry[];
+  equity_curve: Array<{ time: number; value: number }>;
+}
+
+export interface AppSettings {
+  llm_provider: string;
+  deep_think_llm: string;
+  quick_think_llm: string;
+  execution_mode: string;
+  home_market: string;
+  max_debate_rounds: number;
+  max_risk_discuss_rounds: number;
+  output_language: string;
+  status: string;
+}
+
+export interface WorkflowSession {
+  session_id: string;
+  started_at: string;
+  screens_visited: Screen[];
+  status: string;
+}
+
+export interface HistoryItem {
+  id: string;
+  type: string;
+  title: string;
+  status: string;
+  created_at: string | null;
+  completed_at: string | null;
+  home_market: string | null;
+  workflow_session_id: string | null;
+  summary?: string | null;
+}

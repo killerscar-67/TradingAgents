@@ -1,27 +1,32 @@
-import { useState } from "react";
-import { RunForm } from "./components/RunForm";
-import { RunDetail } from "./components/RunDetail";
-import { ReportArchives } from "./components/ReportArchives";
+import { WorkflowProvider, useWorkflow } from "./contexts/WorkflowContext";
+import { AppShell } from "./components/AppShell";
+import { MarketScreen } from "./screens/MarketScreen";
+import { ScreeningScreen } from "./screens/ScreeningScreen";
+import { BatchScreen } from "./screens/BatchScreen";
+import { StrategyScreen } from "./screens/StrategyScreen";
+import { BacktestScreen } from "./screens/BacktestScreen";
+import { HistoryScreen } from "./screens/HistoryScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
+
+function ScreenRouter() {
+  const { screen } = useWorkflow();
+  switch (screen) {
+    case "market":    return <MarketScreen />;
+    case "screen":    return <ScreeningScreen />;
+    case "batch":     return <BatchScreen />;
+    case "strategy":  return <StrategyScreen />;
+    case "backtest":  return <BacktestScreen />;
+    case "history":   return <HistoryScreen />;
+    case "settings":  return <SettingsScreen />;
+  }
+}
 
 export default function App() {
-  const [runId, setRunId] = useState<string | null>(null);
-  const [view, setView] = useState<"new" | "archives">("new");
-
-  if (runId) {
-    return <RunDetail runId={runId} onBack={() => {
-      setRunId(null);
-      setView("new");
-    }} />;
-  }
-
-  if (view === "archives") {
-    return (
-      <ReportArchives
-        onOpenRun={setRunId}
-        onNewAnalysis={() => setView("new")}
-      />
-    );
-  }
-
-  return <RunForm onRunCreated={setRunId} onViewArchives={() => setView("archives")} />;
+  return (
+    <WorkflowProvider>
+      <AppShell>
+        <ScreenRouter />
+      </AppShell>
+    </WorkflowProvider>
+  );
 }
