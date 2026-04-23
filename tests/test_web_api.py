@@ -326,6 +326,35 @@ class ConsultantChatTests(unittest.TestCase):
         self.assertNotIn("blocking", body)
         self.assertIn("answer", body)
 
+    def test_consultant_route_uses_runnable_llm_from_client_wrapper(self):
+        run_id = self._create_run_with_sections()
+
+        mock_response = MagicMock()
+        mock_response.to_dict.return_value = {
+            "answer": "The consultant used the quick model.",
+            "observations": [],
+            "follow_up_questions": [],
+            "referenced_context_keys": ["market_report"],
+            "blocking": False,
+            "error": None,
+        }
+
+        llm = object()
+        client_wrapper = MagicMock()
+        client_wrapper.get_llm.return_value = llm
+
+        with (
+            patch("tradingagents.web.routes.consultant.chat_trade_review", return_value=mock_response) as mock_chat,
+            patch("tradingagents.web.routes.consultant.create_llm_client", return_value=client_wrapper),
+        ):
+            resp = self.client.post(f"/api/analysis/{run_id}/consultant/chat", json={
+                "message": "Why BUY?",
+            })
+
+        self.assertEqual(resp.status_code, 200)
+        client_wrapper.get_llm.assert_called_once_with()
+        self.assertIs(mock_chat.call_args.args[0], llm)
+
     def test_unknown_run_returns_404(self):
         resp = self.client.post("/api/analysis/no-such-run/consultant/chat", json={
             "message": "Hello",

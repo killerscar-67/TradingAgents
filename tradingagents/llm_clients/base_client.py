@@ -51,6 +51,17 @@ class BaseLLMClient(ABC):
             stacklevel=2,
         )
 
+    def invoke(self, input: Any, config: Optional[Any] = None, **kwargs: Any) -> Any:
+        """Proxy invoke calls to the configured runnable LLM.
+
+        Some call sites receive a provider client wrapper instead of the
+        underlying LangChain runnable. Exposing the common invoke surface here
+        keeps those paths compatible without requiring every caller to unwrap
+        the client manually.
+        """
+        llm = self.get_llm()
+        return llm.invoke(input, config=config, **kwargs)
+
     @abstractmethod
     def get_llm(self) -> Any:
         """Return the configured LLM instance."""

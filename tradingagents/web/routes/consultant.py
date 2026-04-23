@@ -41,10 +41,11 @@ def consultant_chat(run_id: str, req: ConsultantChatRequest) -> Dict[str, Any]:
             detail="Run has no report context yet; wait until analysis is further along",
         )
 
-    llm = create_llm_client(
+    llm_client = create_llm_client(
         provider=run.llm_provider,
         model=run.quick_think_llm,
     )
+    llm = llm_client.get_llm() if hasattr(llm_client, "get_llm") else llm_client
 
     context: Dict[str, Any] = {
         "ticker": run.ticker,
