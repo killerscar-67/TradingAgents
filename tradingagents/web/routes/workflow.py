@@ -16,8 +16,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from tradingagents.web import runner
-from tradingagents.web.models import MarketOverview
 from tradingagents.web.storage import get_workflow_store
+from tradingagents.web.workflow_service import (
+    build_strategy_from_batch,
+    get_market_overview as build_market_overview,
+    resolve_basket_items,
+    run_backtest_for_strategy,
+    run_batch_analysis,
+    run_screening,
+    stage_futu_strategy,
+)
 
 
 router = APIRouter(tags=["workflow"])
@@ -115,7 +123,7 @@ class StrategyFromBatchRequest(BaseModel):
 class FutuStageRequest(BaseModel):
     strategy_id: Optional[str] = None
     workflow_session_id: Optional[str] = None
-    orders: List[Dict[str, Any]]
+    orders: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class BacktestRequest(BaseModel):
@@ -162,65 +170,45 @@ class WorkflowSessionUpdateRequest(BaseModel):
 
 @router.get("/api/market/overview")
 def get_market_overview(home_market: str = "US", trade_date: Optional[str] = None) -> Dict[str, Any]:
-    """Return a deterministic placeholder overview with the final response shape."""
-    overview = MarketOverview(
-        home_market=home_market.upper() or "US",
-        trade_date=trade_date or date.today().isoformat(),
-        status="contract_ready",
-        indices=[
-            {"symbol": "^GSPC", "label": "S&P 500", "price": 0.0, "change_pct": 0.0},
-            {"symbol": "^NDX", "label": "NASDAQ 100", "price": 0.0, "change_pct": 0.0},
-            {"symbol": "^VIX", "label": "VIX", "price": 0.0, "change_pct": 0.0},
-        ],
-        regime={
-            "label": "Pending data integration",
-            "confidence": 0,
-            "suggested_entry_mode": "auto",
-            "event_risk_flag": False,
-        },
-        breadth={},
-        sectors=[],
-        events=[],
-        regions={},
-        stream={"status": "contract_ready", "transport": "websocket"},
-    )
-    return overview.to_dict()
+    settings = get_workflow_store().get_settings_without_status()
+    return build_market_overview(home_market, trade_date, settings)
 
 
 @router.websocket("/api/market/live")
 async def stream_market_live(websocket: WebSocket) -> None:
     await websocket.accept()
+    interval_seconds = max(float(websocket.query_params.get("interval_seconds", "5") or "5"), 0.01)
     try:
-        await websocket.send_json(
-            {
-                "type": "market_snapshot",
-                "payload": get_market_overview(
-                    home_market=websocket.query_params.get("home_market", "US"),
-                    trade_date=websocket.query_params.get("trade_date"),
-                ),
-            }
-        )
-        await asyncio.sleep(0.01)
+        while True:
+            settings = get_workflow_store().get_settings_without_status()
+            await websocket.send_json(
+                {
+                    "type": "market_snapshot",
+                    "payload": build_market_overview(
+                        websocket.query_params.get("home_market", "US"),
+                        websocket.query_params.get("trade_date"),
+                        settings,
+                    ),
+                }
+            )
+            await asyncio.sleep(interval_seconds)
     except WebSocketDisconnect:
         return
-    else:
-        await websocket.close()
 
 
 @router.post("/api/screening/runs")
 def create_screening_run(req: ScreeningRunRequest) -> Dict[str, Any]:
     store = get_workflow_store()
-    home_market = store.get_settings_without_status().get("home_market", "US")
-    screening_run = store.create_screening_run(
-        req.model_dump(),
-        home_market=home_market,
-        workflow_session_id=req.workflow_session_id,
-    )
+    settings = store.get_settings_without_status()
+    screening_run = run_screening(req.model_dump(), store, settings)
     return {
         "kind": "screening_run",
         "status": screening_run["status"],
         "run_id": screening_run["run_id"],
         "workflow_session_id": screening_run["workflow_session_id"],
+        "home_market": screening_run["home_market"],
+        "regime": screening_run.get("result", {}).get("regime", {}),
+        "results": screening_run.get("results", []),
         "request": req.model_dump(),
     }
 
@@ -230,7 +218,7 @@ def create_basket(req: BasketRequest) -> Dict[str, Any]:
     store = get_workflow_store()
     home_market = store.get_settings_without_status().get("home_market", "US")
     basket = store.create_basket(
-        req.model_dump(),
+        resolve_basket_items(req.model_dump(), store),
         home_market=home_market,
         workflow_session_id=req.workflow_session_id,
     )
@@ -239,6 +227,7 @@ def create_basket(req: BasketRequest) -> Dict[str, Any]:
         "status": "ready",
         "basket_id": basket["basket_id"],
         "workflow_session_id": basket["workflow_session_id"],
+        "items": basket.get("items", []),
         "request": req.model_dump(),
     }
 
@@ -246,17 +235,15 @@ def create_basket(req: BasketRequest) -> Dict[str, Any]:
 @router.post("/api/batches")
 def create_batch(req: BatchRequest) -> Dict[str, Any]:
     store = get_workflow_store()
-    home_market = store.get_settings_without_status().get("home_market", "US")
-    batch = store.create_analysis_batch(
-        req.model_dump(),
-        home_market=home_market,
-        workflow_session_id=req.workflow_session_id,
-    )
+    settings = store.get_settings_without_status()
+    batch = run_batch_analysis(req.model_dump(), store, settings)
     return {
         "kind": "analysis_batch",
         "status": batch["status"],
         "batch_id": batch["batch_id"],
         "workflow_session_id": batch["workflow_session_id"],
+        "items": batch.get("items", []),
+        "summary": batch.get("summary", {}),
         "request": req.model_dump(),
     }
 
@@ -264,7 +251,12 @@ def create_batch(req: BatchRequest) -> Dict[str, Any]:
 @router.get("/api/batches/{batch_id}/events")
 async def stream_batch_events(batch_id: str) -> StreamingResponse:
     async def generator():
-        yield f"data: {json.dumps({'type': 'batch_status', 'batch_id': batch_id, 'status': 'contract_ready'})}\n\n"
+        batch = get_workflow_store().get_analysis_batch(batch_id)
+        if batch is None:
+            yield f"data: {json.dumps({'type': 'batch_status', 'batch_id': batch_id, 'status': 'not_found'})}\n\n"
+            return
+        for event in batch.get("events", []):
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 
@@ -272,39 +264,33 @@ async def stream_batch_events(batch_id: str) -> StreamingResponse:
 @router.post("/api/strategies/from-batch")
 def create_strategy_from_batch(req: StrategyFromBatchRequest) -> Dict[str, Any]:
     store = get_workflow_store()
-    home_market = store.get_settings_without_status().get("home_market", "US")
-    strategy = store.create_strategy_plan(
-        req.model_dump(),
-        home_market=home_market,
-        workflow_session_id=req.workflow_session_id,
-    )
+    settings = store.get_settings_without_status()
+    strategy = build_strategy_from_batch(req.model_dump(), store, settings)
     return {
         "kind": "trade_plan",
         "status": "ready",
         "strategy_id": strategy["strategy_id"],
         "workflow_session_id": strategy["workflow_session_id"],
+        "trades": strategy.get("trades", []),
+        "exposure": strategy.get("exposure", {}),
+        "risk": strategy.get("risk", {}),
         "request": req.model_dump(),
     }
 
 
 @router.post("/api/broker/futu/stage")
 def stage_futu_orders(req: FutuStageRequest) -> Dict[str, Any]:
-    payload = req.model_dump()
-    payload["stage_only"] = True
-    payload["submits_orders"] = False
     store = get_workflow_store()
-    home_market = store.get_settings_without_status().get("home_market", "US")
-    stage_request = store.create_broker_stage_request(
-        payload,
-        home_market=home_market,
-        workflow_session_id=req.workflow_session_id,
-    )
+    settings = store.get_settings_without_status()
+    stage_request = stage_futu_strategy(req.model_dump(), store, settings)
     return {
         "kind": "futu_stage_request",
         "status": stage_request["status"],
         "stage_id": stage_request["stage_id"],
         "workflow_session_id": stage_request["workflow_session_id"],
-        "request": payload,
+        "request": stage_request["request"],
+        "response": stage_request.get("response", {}),
+        "error": stage_request.get("error"),
     }
 
 
@@ -317,17 +303,14 @@ def create_backtest(req: BacktestRequest) -> Dict[str, Any]:
     payload["execution_mode"] = "quant_strict"
     payload["llm_constructed"] = False
     store = get_workflow_store()
-    home_market = store.get_settings_without_status().get("home_market", "US")
-    backtest = store.create_backtest_run(
-        payload,
-        home_market=home_market,
-        workflow_session_id=req.workflow_session_id,
-    )
+    settings = store.get_settings_without_status()
+    backtest = run_backtest_for_strategy(payload, store, settings)
     return {
         "kind": "backtest_run",
         "status": backtest["status"],
         "backtest_id": backtest["backtest_id"],
         "workflow_session_id": backtest["workflow_session_id"],
+        "result": backtest.get("result", {}),
         "request": payload,
     }
 
@@ -335,7 +318,12 @@ def create_backtest(req: BacktestRequest) -> Dict[str, Any]:
 @router.get("/api/backtests/{backtest_id}/events")
 async def stream_backtest_events(backtest_id: str) -> StreamingResponse:
     async def generator():
-        yield f"data: {json.dumps({'type': 'backtest_status', 'backtest_id': backtest_id, 'status': 'contract_ready', 'execution_mode': 'quant_strict'})}\n\n"
+        backtest = get_workflow_store().get_backtest_run(backtest_id)
+        if backtest is None:
+            yield f"data: {json.dumps({'type': 'backtest_status', 'backtest_id': backtest_id, 'status': 'not_found', 'execution_mode': 'quant_strict'})}\n\n"
+            return
+        for event in backtest.get("events", []):
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")
 

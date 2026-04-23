@@ -174,6 +174,164 @@ def _coerce_entry_signal(direction: str, signal_payload: Optional[Dict]) -> Entr
     )
 
 
+def _trade_plan_direction(trade_plan: Dict) -> Optional[str]:
+    direction = str(trade_plan.get("direction", "")).strip().lower()
+    if direction in {"long", "short"}:
+        return direction
+    side = str(trade_plan.get("side", "")).strip().lower()
+    if side == "buy":
+        return "long"
+    if side == "sell":
+        return "short"
+    return None
+
+
+def _to_positive_float(value: object) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0.0 else 0.0
+
+
+def run_trade_plan_backtest(
+    symbol: str,
+    bars_15m: pd.DataFrame,
+    trade_plan: Dict,
+    initial_equity: float = 100_000.0,
+    config: Optional[Dict] = None,
+) -> BacktestResult:
+    """Replay a frozen saved trade plan without re-running the quant engine.
+
+    The trade enters at the saved entry price on the first available bar and then
+    uses the saved quantity, stop, and target for deterministic management.
+    """
+    cfg = dict(config or {})
+    bars_per_day = int(cfg.get("bars_per_day", 26))
+    commission = float(cfg.get("backtest_commission", 1.0))
+    slippage_pct = float(cfg.get("backtest_slippage_pct", 0.0005))
+    n_bars = len(bars_15m)
+
+    if n_bars == 0:
+        return _empty_result(symbol, initial_equity, cfg, n_bars)
+
+    direction = _trade_plan_direction(trade_plan)
+    entry_price = _to_positive_float(trade_plan.get("entry_price"))
+    quantity = _to_positive_float(trade_plan.get("quantity"))
+    stop_price = _to_positive_float(trade_plan.get("stop_price"))
+    target_price = _to_positive_float(trade_plan.get("target_price"))
+    if direction is None or entry_price <= 0.0 or quantity <= 0.0:
+        return _empty_result(symbol, initial_equity, cfg, n_bars)
+
+    realized_equity = initial_equity - commission
+    equity_curve: List[float] = []
+    trades: List[BacktestTrade] = []
+    entry_timestamp = str(bars_15m.index[0])
+
+    for i in range(n_bars):
+        bar = bars_15m.iloc[i]
+        bar_close = float(bar["Close"])
+        bar_low = float(bar["Low"])
+        bar_high = float(bar["High"])
+        unreal = (
+            (bar_close - entry_price) * quantity
+            if direction == "long"
+            else (entry_price - bar_close) * quantity
+        )
+        equity_curve.append(realized_equity + unreal)
+
+        if i >= n_bars - 1:
+            continue
+
+        stop_hit = False
+        target_hit = False
+        if direction == "long":
+            stop_hit = stop_price > 0.0 and bar_low <= stop_price
+            target_hit = target_price > 0.0 and bar_high >= target_price
+        else:
+            stop_hit = stop_price > 0.0 and bar_high >= stop_price
+            target_hit = target_price > 0.0 and bar_low <= target_price
+
+        if not stop_hit and not target_hit:
+            continue
+
+        next_open = float(bars_15m.iloc[i + 1]["Open"])
+        sign = -1.0 if direction == "long" else 1.0
+        fill = max(next_open * (1.0 + sign * slippage_pct), 1e-10)
+        gross = (
+            (fill - entry_price) * quantity
+            if direction == "long"
+            else (entry_price - fill) * quantity
+        )
+        realized_equity += gross - commission
+        exit_reason = "stop" if stop_hit else "target"
+        trades.append(
+            BacktestTrade(
+                symbol=symbol,
+                direction=direction,
+                entry_bar_idx=0,
+                exit_bar_idx=i + 1,
+                entry_price=round(entry_price, 8),
+                exit_price=round(fill, 8),
+                quantity=round(quantity, 8),
+                gross_pnl=round(gross, 6),
+                commission=round(2.0 * commission, 6),
+                net_pnl=round(gross - (2.0 * commission), 6),
+                entry_timestamp=entry_timestamp,
+                exit_timestamp=str(bars_15m.index[i + 1]),
+                exit_reason=exit_reason,
+            )
+        )
+        equity_curve[-1] = realized_equity
+        break
+    else:
+        last_close = float(bars_15m["Close"].iloc[-1])
+        gross = (
+            (last_close - entry_price) * quantity
+            if direction == "long"
+            else (entry_price - last_close) * quantity
+        )
+        realized_equity += gross
+        trades.append(
+            BacktestTrade(
+                symbol=symbol,
+                direction=direction,
+                entry_bar_idx=0,
+                exit_bar_idx=n_bars - 1,
+                entry_price=round(entry_price, 8),
+                exit_price=round(last_close, 8),
+                quantity=round(quantity, 8),
+                gross_pnl=round(gross, 6),
+                commission=round(commission, 6),
+                net_pnl=round(gross - commission, 6),
+                entry_timestamp=entry_timestamp,
+                exit_timestamp=str(bars_15m.index[-1]),
+                exit_reason="end_of_data",
+            )
+        )
+        equity_curve[-1] = realized_equity
+
+    eq_tuple = tuple(equity_curve)
+    trades_tuple = tuple(trades)
+    wins = sum(1 for trade in trades_tuple if trade.net_pnl > 0.0)
+    final_eq = round(realized_equity, 6)
+    ret_pct = round((final_eq - initial_equity) / initial_equity * 100.0, 4) if initial_equity else 0.0
+    return BacktestResult(
+        symbol=symbol,
+        initial_equity=initial_equity,
+        final_equity=final_eq,
+        trades=trades_tuple,
+        equity_curve=eq_tuple,
+        sharpe_ratio=_compute_sharpe(eq_tuple, bars_per_day),
+        max_drawdown_pct=_compute_max_drawdown(eq_tuple),
+        total_return_pct=ret_pct,
+        trade_count=len(trades_tuple),
+        winning_trades=wins,
+        win_rate=round(wins / len(trades_tuple), 4) if trades_tuple else 0.0,
+        config=cfg,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

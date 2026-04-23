@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 
 _DEFAULT_DB_PATH = Path.home() / ".tradingagents" / "web.sqlite3"
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _STORE_LOCK = threading.Lock()
 _STORES: Dict[str, "WorkflowStore"] = {}
 
@@ -69,7 +69,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _json_dumps(payload: Dict[str, Any]) -> str:
+def _json_dumps(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True)
 
 
@@ -267,8 +267,8 @@ class WorkflowStore:
                 INSERT INTO screening_runs(
                     run_id, universe, strategy, trade_date, top_n, min_score,
                     filters_json, custom_symbols_json, regime_json, status,
-                    created_at, home_market, workflow_session_id, request_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, home_market, workflow_session_id, request_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run["run_id"],
@@ -285,6 +285,7 @@ class WorkflowStore:
                     run["home_market"],
                     run["workflow_session_id"],
                     _json_dumps(payload),
+                    _json_dumps({}),
                 ),
             )
             self._update_workflow_session_links(
@@ -296,6 +297,63 @@ class WorkflowStore:
             )
             conn.commit()
         return run
+
+    def update_screening_run(
+        self,
+        run_id: str,
+        *,
+        status: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._write_lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT request_json, result_json, status FROM screening_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            next_status = status or existing["status"]
+            next_result = result if result is not None else _json_loads(existing["result_json"], fallback={})
+            conn.execute(
+                "UPDATE screening_runs SET status = ?, result_json = ? WHERE run_id = ?",
+                (next_status, _json_dumps(next_result), run_id),
+            )
+            conn.commit()
+        return self.get_screening_run(run_id)
+
+    def get_screening_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, universe, strategy, trade_date, top_n, min_score,
+                       filters_json, custom_symbols_json, regime_json, status,
+                       created_at, home_market, workflow_session_id, request_json, result_json
+                FROM screening_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = _json_loads(row["result_json"], fallback={})
+        return {
+            "run_id": row["run_id"],
+            "universe": row["universe"],
+            "strategy": row["strategy"],
+            "trade_date": row["trade_date"],
+            "top_n": row["top_n"],
+            "min_score": row["min_score"],
+            "filters": _json_loads(row["filters_json"], fallback={}),
+            "custom_symbols": _json_loads(row["custom_symbols_json"], fallback=[]),
+            "regime": _json_loads(row["regime_json"], fallback={}),
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "request": _json_loads(row["request_json"], fallback={}),
+            "results": result.get("results", []),
+            "result": result,
+        }
 
     def create_basket(
         self,
@@ -485,8 +543,9 @@ class WorkflowStore:
                 INSERT INTO analysis_batches(
                     batch_id, basket_id, symbols_json, analysis_date, selected_analysts_json,
                     execution_mode, llm_provider, deep_think_llm, quick_think_llm,
-                    status, created_at, updated_at, home_market, workflow_session_id, request_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, created_at, updated_at, home_market, workflow_session_id, request_json,
+                    items_json, summary_json, events_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch["batch_id"],
@@ -504,6 +563,9 @@ class WorkflowStore:
                     batch["home_market"],
                     batch["workflow_session_id"],
                     _json_dumps(payload),
+                    _json_dumps([]),
+                    _json_dumps({}),
+                    _json_dumps([]),
                 ),
             )
             self._update_workflow_session_links(
@@ -516,6 +578,80 @@ class WorkflowStore:
             )
             conn.commit()
         return batch
+
+    def update_analysis_batch(
+        self,
+        batch_id: str,
+        *,
+        status: Optional[str] = None,
+        items: Optional[List[Dict[str, Any]]] = None,
+        summary: Optional[Dict[str, Any]] = None,
+        events: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._write_lock, self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT status, items_json, summary_json, events_json
+                FROM analysis_batches
+                WHERE batch_id = ?
+                """,
+                (batch_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            conn.execute(
+                """
+                UPDATE analysis_batches
+                SET status = ?, updated_at = ?, items_json = ?, summary_json = ?, events_json = ?
+                WHERE batch_id = ?
+                """,
+                (
+                    status or existing["status"],
+                    _utc_now(),
+                    _json_dumps(items if items is not None else _json_loads(existing["items_json"], fallback=[])),
+                    _json_dumps(summary if summary is not None else _json_loads(existing["summary_json"], fallback={})),
+                    _json_dumps(events if events is not None else _json_loads(existing["events_json"], fallback=[])),
+                    batch_id,
+                ),
+            )
+            conn.commit()
+        return self.get_analysis_batch(batch_id)
+
+    def get_analysis_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT batch_id, basket_id, symbols_json, analysis_date, selected_analysts_json,
+                       execution_mode, llm_provider, deep_think_llm, quick_think_llm,
+                       status, created_at, updated_at, home_market, workflow_session_id, request_json,
+                       items_json, summary_json, events_json
+                FROM analysis_batches
+                WHERE batch_id = ?
+                """,
+                (batch_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "batch_id": row["batch_id"],
+            "basket_id": row["basket_id"],
+            "symbols": _json_loads(row["symbols_json"], fallback=[]),
+            "analysis_date": row["analysis_date"],
+            "selected_analysts": _json_loads(row["selected_analysts_json"], fallback=[]),
+            "execution_mode": row["execution_mode"],
+            "llm_provider": row["llm_provider"],
+            "deep_think_llm": row["deep_think_llm"],
+            "quick_think_llm": row["quick_think_llm"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "request": _json_loads(row["request_json"], fallback={}),
+            "items": _json_loads(row["items_json"], fallback=[]),
+            "summary": _json_loads(row["summary_json"], fallback={}),
+            "events": _json_loads(row["events_json"], fallback=[]),
+        }
 
     def create_strategy_plan(
         self,
@@ -546,8 +682,8 @@ class WorkflowStore:
                 """
                 INSERT INTO strategy_runs(
                     strategy_id, batch_id, name, mode, horizon, portfolio_size,
-                    risk_per_trade, allow_shorts, created_at, home_market, workflow_session_id, request_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    risk_per_trade, allow_shorts, created_at, home_market, workflow_session_id, request_json, result_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     strategy["strategy_id"],
@@ -562,6 +698,7 @@ class WorkflowStore:
                     strategy["home_market"],
                     strategy["workflow_session_id"],
                     _json_dumps(payload),
+                    _json_dumps({}),
                 ),
             )
             self._update_workflow_session_links(
@@ -574,6 +711,59 @@ class WorkflowStore:
             )
             conn.commit()
         return strategy
+
+    def update_strategy_plan(
+        self,
+        strategy_id: str,
+        *,
+        result: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        with self._write_lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT strategy_id FROM strategy_runs WHERE strategy_id = ?",
+                (strategy_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE strategy_runs SET result_json = ? WHERE strategy_id = ?",
+                (_json_dumps(result), strategy_id),
+            )
+            conn.commit()
+        return self.get_strategy_plan(strategy_id)
+
+    def get_strategy_plan(self, strategy_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT strategy_id, batch_id, name, mode, horizon, portfolio_size, risk_per_trade,
+                       allow_shorts, created_at, home_market, workflow_session_id, request_json, result_json
+                FROM strategy_runs
+                WHERE strategy_id = ?
+                """,
+                (strategy_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = _json_loads(row["result_json"], fallback={})
+        return {
+            "strategy_id": row["strategy_id"],
+            "batch_id": row["batch_id"],
+            "name": row["name"],
+            "mode": row["mode"],
+            "horizon": row["horizon"],
+            "portfolio_size": row["portfolio_size"],
+            "risk_per_trade": row["risk_per_trade"],
+            "allow_shorts": bool(row["allow_shorts"]),
+            "created_at": row["created_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "request": _json_loads(row["request_json"], fallback={}),
+            "result": result,
+            "trades": result.get("trades", []),
+            "exposure": result.get("exposure", {}),
+            "risk": result.get("risk", {}),
+        }
 
     def create_backtest_run(
         self,
@@ -605,8 +795,9 @@ class WorkflowStore:
                 INSERT INTO backtest_runs(
                     backtest_id, strategy_id, symbols_json, start_date, end_date,
                     portfolio_size, config_json, execution_mode, llm_constructed,
-                    status, created_at, home_market, workflow_session_id, result_json, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, created_at, home_market, workflow_session_id, result_json, error,
+                    completed_at, events_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     backtest["backtest_id"],
@@ -624,18 +815,106 @@ class WorkflowStore:
                     backtest["workflow_session_id"],
                     _json_dumps({}),
                     None,
+                    None,
+                    _json_dumps([]),
                 ),
             )
             self._update_workflow_session_links(
                 conn,
                 session_id=backtest["workflow_session_id"],
                 current_screen="backtest",
-                status="completed",
+                status="active",
                 strategy_id=backtest.get("strategy_id"),
                 backtest_id=backtest["backtest_id"],
             )
             conn.commit()
         return backtest
+
+    def update_backtest_run(
+        self,
+        backtest_id: str,
+        *,
+        status: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        events: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._write_lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT status, result_json, error, events_json FROM backtest_runs WHERE backtest_id = ?",
+                (backtest_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            next_status = status or existing["status"]
+            next_result = result if result is not None else _json_loads(existing["result_json"], fallback={})
+            next_events = events if events is not None else _json_loads(existing["events_json"], fallback=[])
+            completed_at = _utc_now() if next_status in {"completed", "error"} else None
+            conn.execute(
+                """
+                UPDATE backtest_runs
+                SET status = ?, result_json = ?, error = ?, completed_at = ?, events_json = ?
+                WHERE backtest_id = ?
+                """,
+                (
+                    next_status,
+                    _json_dumps(next_result),
+                    error,
+                    completed_at,
+                    _json_dumps(next_events),
+                    backtest_id,
+                ),
+            )
+            if next_status in {"completed", "error"}:
+                row = conn.execute(
+                    "SELECT workflow_session_id, strategy_id FROM backtest_runs WHERE backtest_id = ?",
+                    (backtest_id,),
+                ).fetchone()
+                if row:
+                    self._update_workflow_session_links(
+                        conn,
+                        session_id=row["workflow_session_id"],
+                        current_screen="backtest",
+                        status="completed",
+                        strategy_id=row["strategy_id"],
+                        backtest_id=backtest_id,
+                    )
+            conn.commit()
+        return self.get_backtest_run(backtest_id)
+
+    def get_backtest_run(self, backtest_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT backtest_id, strategy_id, symbols_json, start_date, end_date, portfolio_size,
+                       config_json, execution_mode, llm_constructed, status, created_at, home_market,
+                       workflow_session_id, result_json, error, completed_at, events_json
+                FROM backtest_runs
+                WHERE backtest_id = ?
+                """,
+                (backtest_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "backtest_id": row["backtest_id"],
+            "strategy_id": row["strategy_id"],
+            "symbols": _json_loads(row["symbols_json"], fallback=[]),
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+            "portfolio_size": row["portfolio_size"],
+            "config": _json_loads(row["config_json"], fallback={}),
+            "execution_mode": row["execution_mode"],
+            "llm_constructed": bool(row["llm_constructed"]),
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "result": _json_loads(row["result_json"], fallback={}),
+            "error": row["error"],
+            "completed_at": row["completed_at"],
+            "events": _json_loads(row["events_json"], fallback=[]),
+        }
 
     def create_broker_stage_request(
         self,
@@ -666,8 +945,9 @@ class WorkflowStore:
                 """
                 INSERT INTO broker_stage_requests(
                     stage_id, strategy_id, orders_json, stage_only, submits_orders,
-                    status, created_at, home_market, workflow_session_id, request_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, created_at, home_market, workflow_session_id, request_json,
+                    response_json, completed_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     stage_request["stage_id"],
@@ -680,6 +960,9 @@ class WorkflowStore:
                     stage_request["home_market"],
                     stage_request["workflow_session_id"],
                     _json_dumps(payload),
+                    _json_dumps({}),
+                    None,
+                    None,
                 ),
             )
             self._update_workflow_session_links(
@@ -691,6 +974,90 @@ class WorkflowStore:
             )
             conn.commit()
         return stage_request
+
+    def update_broker_stage_request(
+        self,
+        stage_id: str,
+        *,
+        status: Optional[str] = None,
+        response: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._write_lock, self._connect() as conn:
+            existing = conn.execute(
+                "SELECT status, response_json FROM broker_stage_requests WHERE stage_id = ?",
+                (stage_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            next_status = status or existing["status"]
+            next_response = response if response is not None else _json_loads(existing["response_json"], fallback={})
+            completed_at = _utc_now() if next_status in {"staged", "failed"} else None
+            conn.execute(
+                """
+                UPDATE broker_stage_requests
+                SET status = ?, response_json = ?, completed_at = ?, error = ?
+                WHERE stage_id = ?
+                """,
+                (next_status, _json_dumps(next_response), completed_at, error, stage_id),
+            )
+            conn.commit()
+        return self.get_broker_stage_request(stage_id)
+
+    def get_broker_stage_request(self, stage_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT stage_id, strategy_id, orders_json, stage_only, submits_orders, status, created_at,
+                       home_market, workflow_session_id, request_json, response_json, completed_at, error
+                FROM broker_stage_requests
+                WHERE stage_id = ?
+                """,
+                (stage_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "stage_id": row["stage_id"],
+            "strategy_id": row["strategy_id"],
+            "orders": _json_loads(row["orders_json"], fallback=[]),
+            "stage_only": bool(row["stage_only"]),
+            "submits_orders": bool(row["submits_orders"]),
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "request": _json_loads(row["request_json"], fallback={}),
+            "response": _json_loads(row["response_json"], fallback={}),
+            "completed_at": row["completed_at"],
+            "error": row["error"],
+        }
+
+    def get_basket(self, basket_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT basket_id, name, symbols_json, items_json, source_screening_run_id,
+                       created_at, updated_at, home_market, workflow_session_id, request_json
+                FROM baskets
+                WHERE basket_id = ?
+                """,
+                (basket_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "basket_id": row["basket_id"],
+            "name": row["name"],
+            "symbols": _json_loads(row["symbols_json"], fallback=[]),
+            "items": _json_loads(row["items_json"], fallback=[]),
+            "source_screening_run_id": row["source_screening_run_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "home_market": row["home_market"],
+            "workflow_session_id": row["workflow_session_id"],
+            "request": _json_loads(row["request_json"], fallback={}),
+        }
 
     def list_history_items(self) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
@@ -709,21 +1076,25 @@ class WorkflowStore:
 
     def _fetch_screening_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
-            "SELECT run_id, universe, status, created_at, home_market, workflow_session_id FROM screening_runs"
+            "SELECT run_id, universe, status, created_at, home_market, workflow_session_id, result_json FROM screening_runs"
         ).fetchall()
-        return [
-            {
-                "type": "screening_run",
-                "id": row["run_id"],
-                "title": row["universe"] or row["run_id"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "completed_at": row["created_at"],
-                "home_market": row["home_market"],
-                "workflow_session_id": row["workflow_session_id"],
-            }
-            for row in rows
-        ]
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            result = _json_loads(row["result_json"], fallback={})
+            items.append(
+                {
+                    "type": "screening_run",
+                    "id": row["run_id"],
+                    "title": row["universe"] or row["run_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "completed_at": result.get("completed_at") or row["created_at"],
+                    "home_market": row["home_market"],
+                    "workflow_session_id": row["workflow_session_id"],
+                    "summary": result.get("summary"),
+                }
+            )
+        return items
 
     def _fetch_basket_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
@@ -745,75 +1116,91 @@ class WorkflowStore:
 
     def _fetch_batch_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
-            "SELECT batch_id, status, created_at, updated_at, home_market, symbols_json, workflow_session_id FROM analysis_batches"
+            "SELECT batch_id, status, created_at, updated_at, home_market, symbols_json, workflow_session_id, summary_json FROM analysis_batches"
         ).fetchall()
-        return [
-            {
-                "type": "batch_analysis",
-                "id": row["batch_id"],
-                "title": ", ".join(_json_loads(row["symbols_json"], fallback=[])) or row["batch_id"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "completed_at": row["updated_at"],
-                "home_market": row["home_market"],
-                "workflow_session_id": row["workflow_session_id"],
-            }
-            for row in rows
-        ]
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            summary = _json_loads(row["summary_json"], fallback={})
+            items.append(
+                {
+                    "type": "batch_analysis",
+                    "id": row["batch_id"],
+                    "title": summary.get("title") or ", ".join(_json_loads(row["symbols_json"], fallback=[])) or row["batch_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "completed_at": summary.get("completed_at") or row["updated_at"],
+                    "home_market": row["home_market"],
+                    "workflow_session_id": row["workflow_session_id"],
+                    "summary": summary.get("headline"),
+                }
+            )
+        return items
 
     def _fetch_strategy_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
-            "SELECT strategy_id, name, created_at, home_market, workflow_session_id FROM strategy_runs"
+            "SELECT strategy_id, name, created_at, home_market, workflow_session_id, result_json FROM strategy_runs"
         ).fetchall()
-        return [
-            {
-                "type": "strategy_plan",
-                "id": row["strategy_id"],
-                "title": row["name"],
-                "status": "saved",
-                "created_at": row["created_at"],
-                "completed_at": row["created_at"],
-                "home_market": row["home_market"],
-                "workflow_session_id": row["workflow_session_id"],
-            }
-            for row in rows
-        ]
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            result = _json_loads(row["result_json"], fallback={})
+            items.append(
+                {
+                    "type": "strategy_plan",
+                    "id": row["strategy_id"],
+                    "title": row["name"],
+                    "status": result.get("status", "saved"),
+                    "created_at": row["created_at"],
+                    "completed_at": result.get("completed_at") or row["created_at"],
+                    "home_market": row["home_market"],
+                    "workflow_session_id": row["workflow_session_id"],
+                    "summary": result.get("headline"),
+                }
+            )
+        return items
 
     def _fetch_backtest_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
-            "SELECT backtest_id, status, created_at, home_market, strategy_id, workflow_session_id FROM backtest_runs"
+            "SELECT backtest_id, status, created_at, completed_at, home_market, strategy_id, workflow_session_id, result_json FROM backtest_runs"
         ).fetchall()
-        return [
-            {
-                "type": "backtest_run",
-                "id": row["backtest_id"],
-                "title": row["strategy_id"] or row["backtest_id"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "completed_at": None,
-                "home_market": row["home_market"],
-                "workflow_session_id": row["workflow_session_id"],
-            }
-            for row in rows
-        ]
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            result = _json_loads(row["result_json"], fallback={})
+            items.append(
+                {
+                    "type": "backtest_run",
+                    "id": row["backtest_id"],
+                    "title": row["strategy_id"] or row["backtest_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "completed_at": row["completed_at"],
+                    "home_market": row["home_market"],
+                    "workflow_session_id": row["workflow_session_id"],
+                    "summary": result.get("headline"),
+                }
+            )
+        return items
 
     def _fetch_stage_history(self, conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         rows = conn.execute(
-            "SELECT stage_id, status, created_at, home_market, strategy_id, workflow_session_id FROM broker_stage_requests"
+            "SELECT stage_id, status, created_at, completed_at, home_market, strategy_id, workflow_session_id, response_json FROM broker_stage_requests"
         ).fetchall()
-        return [
-            {
-                "type": "broker_stage_request",
-                "id": row["stage_id"],
-                "title": row["strategy_id"] or row["stage_id"],
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "completed_at": row["created_at"],
-                "home_market": row["home_market"],
-                "workflow_session_id": row["workflow_session_id"],
-            }
-            for row in rows
-        ]
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            response = _json_loads(row["response_json"], fallback={})
+            items.append(
+                {
+                    "type": "broker_stage_request",
+                    "id": row["stage_id"],
+                    "title": row["strategy_id"] or row["stage_id"],
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "completed_at": row["completed_at"] or row["created_at"],
+                    "home_market": row["home_market"],
+                    "workflow_session_id": row["workflow_session_id"],
+                    "summary": response.get("headline"),
+                }
+            )
+        return items
 
     def _lookup_session_id_for_screening_run(self, run_id: str) -> Optional[str]:
         with self._connect() as conn:
@@ -980,7 +1367,8 @@ class WorkflowStore:
                     created_at TEXT NOT NULL,
                     home_market TEXT,
                     workflow_session_id TEXT,
-                    request_json TEXT NOT NULL
+                    request_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS baskets (
@@ -1030,7 +1418,10 @@ class WorkflowStore:
                     updated_at TEXT NOT NULL,
                     home_market TEXT,
                     workflow_session_id TEXT,
-                    request_json TEXT NOT NULL
+                    request_json TEXT NOT NULL,
+                    items_json TEXT NOT NULL,
+                    summary_json TEXT NOT NULL,
+                    events_json TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS strategy_runs (
@@ -1045,7 +1436,8 @@ class WorkflowStore:
                     created_at TEXT NOT NULL,
                     home_market TEXT,
                     workflow_session_id TEXT,
-                    request_json TEXT NOT NULL
+                    request_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS backtest_runs (
@@ -1063,7 +1455,9 @@ class WorkflowStore:
                     home_market TEXT,
                     workflow_session_id TEXT,
                     result_json TEXT NOT NULL,
-                    error TEXT
+                    error TEXT,
+                    completed_at TEXT,
+                    events_json TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS broker_stage_requests (
@@ -1076,7 +1470,10 @@ class WorkflowStore:
                     created_at TEXT NOT NULL,
                     home_market TEXT,
                     workflow_session_id TEXT,
-                    request_json TEXT NOT NULL
+                    request_json TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    completed_at TEXT,
+                    error TEXT
                 );
                 """
             )
