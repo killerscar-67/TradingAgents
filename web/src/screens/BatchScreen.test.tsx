@@ -183,6 +183,27 @@ describe("BatchScreen", () => {
     expect(screen.getByText(/amd.*agent_status.*running/i)).toBeInTheDocument();
   });
 
+  it("formats ISO batch event timestamps without Invalid Date", async () => {
+    stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "META" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    MockEventSource.instances[0].emit({
+      type: "batch_item",
+      batch_id: "batch-001",
+      symbol: "META",
+      run_id: "run-meta",
+      status: "failed",
+      timestamp: "2026-04-23T14:00:00Z",
+    });
+
+    await waitFor(() => expect(screen.getByText(/meta.*batch_item.*failed/i)).toBeInTheDocument());
+    expect(screen.queryByText(/invalid date/i)).not.toBeInTheDocument();
+  });
+
   it("confirms Stop all before posting the stop request", async () => {
     const mock = stubFetch();
     renderScreen();

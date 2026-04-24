@@ -12,7 +12,7 @@ export interface BatchEvent {
   phase?: string;
   counts?: Record<string, number>;
   sequence?: number;
-  timestamp: number;
+  timestamp?: number | string;
 }
 
 export function useBatchEvents(batchId: string | null) {

@@ -21,9 +21,9 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "home_market": "US",
     "output_language": "English",
     "calendar_provider": "fmp",
-    "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.4",
-    "quick_think_llm": "gpt-5.4-mini",
+    "llm_provider": "qwen",
+    "deep_think_llm": "qwen-plus",
+    "quick_think_llm": "qwen-turbo",
     "data_vendors": {"market": "yfinance"},
     "live_quote_mode": "delayed_fallback",
     "default_shortcut_universe": {

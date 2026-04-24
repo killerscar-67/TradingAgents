@@ -16,6 +16,8 @@ export function useMarketOverview() {
 
   useEffect(() => {
     let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const fetchOverview = async () => {
       try {
@@ -33,8 +35,6 @@ export function useMarketOverview() {
         }
       }
     };
-
-    fetchOverview();
 
     const connectWs = () => {
       const ws = new WebSocket(apiWsUrl("/api/market/live"));
@@ -61,7 +61,7 @@ export function useMarketOverview() {
         if (!cancelled) {
           setLive(false);
           // reconnect after 5 seconds
-          setTimeout(connectWs, 5000);
+          reconnectTimer = setTimeout(connectWs, 5000);
         }
       };
 
@@ -70,10 +70,16 @@ export function useMarketOverview() {
       };
     };
 
-    connectWs();
+    void fetchOverview().then(() => {
+      if (!cancelled) {
+        connectTimer = setTimeout(connectWs, 0);
+      }
+    });
 
     return () => {
       cancelled = true;
+      if (connectTimer) clearTimeout(connectTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
   }, []);

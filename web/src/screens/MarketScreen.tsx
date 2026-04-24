@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorkflow } from "../contexts/WorkflowContext";
 import { useMarketOverview } from "../hooks/useMarketOverview";
-import { TradingChart, type LinePoint, type OhlcBar } from "../components/TradingChart";
+import { apiUrl } from "../apiBase";
+import { TradingChart, type ChartSession, type LinePoint, type OhlcBar } from "../components/TradingChart";
 import styles from "./MarketScreen.module.css";
 
 interface SectorChange {
   symbol: string;
-  name?: string;
+  label?: string;
   change_pct: number;
 }
 
@@ -14,6 +15,47 @@ interface CalendarEvent {
   date: string;
   name: string;
   impact: string;
+}
+
+type ChartInterval = "15m" | "4h" | "1D" | "1W" | "1M";
+
+interface ChartPayload {
+  bars?: OhlcBar[];
+  points?: LinePoint[];
+  has_more?: boolean;
+}
+
+const CHART_INTERVALS: ChartInterval[] = ["15m", "4h", "1D", "1W", "1M"];
+const CHART_LIMITS: Record<ChartInterval, number> = {
+  "15m": 104,
+  "4h": 90,
+  "1D": 160,
+  "1W": 104,
+  "1M": 72,
+};
+const CHART_INITIAL_VISIBLE_BARS: Record<ChartInterval, number> = {
+  "15m": 52,
+  "4h": 36,
+  "1D": 60,
+  "1W": 52,
+  "1M": 24,
+};
+
+function isIntradayInterval(interval: ChartInterval): boolean {
+  return interval === "15m" || interval === "4h";
+}
+
+function supportsEtSessionTiming(symbol: string): boolean {
+  return !symbol.endsWith(".TO") && !symbol.endsWith(".HK");
+}
+
+function mergeOlderSeries<T extends { time: number }>(current: T[], older: T[]): T[] {
+  if (!older.length) {
+    return current;
+  }
+  const existingTimes = new Set(current.map((item) => item.time));
+  const merged = [...older.filter((item) => !existingTimes.has(item.time)), ...current];
+  return merged.sort((left, right) => left.time - right.time);
 }
 
 function homeIndexForMarket(market: string): string {
@@ -34,12 +76,34 @@ function homeIndexForMarket(market: string): string {
 export function MarketScreen() {
   const { setRegime, autoAdvance, setScreen } = useWorkflow();
   const { overview, loading, error, live } = useMarketOverview();
-  const [chartTf, setChartTf] = useState("1D");
+  const [chartInterval, setChartInterval] = useState<ChartInterval>("1D");
+  const [chartSession, setChartSession] = useState<ChartSession>("regular");
   const [chartMode, setChartMode] = useState<"candlestick" | "line">("candlestick");
   const [indexChart, setIndexChart] = useState<LinePoint[]>([]);
   const [indexBars, setIndexBars] = useState<OhlcBar[]>([]);
-  const [sectors, setSectors] = useState<SectorChange[]>([]);
-  const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartLoadingMore, setChartLoadingMore] = useState(false);
+  const [chartHasMore, setChartHasMore] = useState(false);
+  const mountedRef = useRef(true);
+  const baseChartRequestRef = useRef(0);
+  const backfillChartRequestRef = useRef(0);
+  const overviewHomeMarket = (overview as { home_market?: string } | null)?.home_market ?? overview?.regime?.home_market ?? "US";
+  const tradeDate = (overview as { trade_date?: string } | null)?.trade_date;
+  const chartSymbol = homeIndexForMarket(overviewHomeMarket);
+  const hasOverview = Boolean(overview);
+  const intradayChart = isIntradayInterval(chartInterval);
+  const sessionTimingSupported = intradayChart && supportsEtSessionTiming(chartSymbol);
+  const sectors: SectorChange[] = overview?.sectors ?? [];
+  const calendar = (overview?.events ?? []).filter((event: CalendarEvent) =>
+    ["H", "M", "HIGH", "MEDIUM"].includes(String(event.impact).toUpperCase())
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (overview?.regime) {
@@ -51,52 +115,110 @@ export function MarketScreen() {
   }, [autoAdvance, overview?.regime, setRegime, setScreen]);
 
   useEffect(() => {
-    if (!overview?.regime) return;
-    let cancelled = false;
-    const overviewHomeMarket = (overview as { home_market?: string } | null)?.home_market ?? overview.regime.home_market;
-    const tradeDate = (overview as { trade_date?: string } | null)?.trade_date;
-    const homeIndex = homeIndexForMarket(overviewHomeMarket);
+    if (sessionTimingSupported) {
+      return;
+    }
+    setChartSession("regular");
+  }, [sessionTimingSupported]);
 
-    const fetchMarketPanels = async () => {
+  const fetchChartChunk = useCallback(
+    async (before?: number) => {
+      if (!hasOverview) {
+        return;
+      }
+
+      const loadingOlder = typeof before === "number";
+      const requestId = loadingOlder ? ++backfillChartRequestRef.current : ++baseChartRequestRef.current;
+      const params = new URLSearchParams({
+        symbol: chartSymbol,
+        interval: chartInterval,
+        limit: String(CHART_LIMITS[chartInterval]),
+      });
+
+      if (sessionTimingSupported) {
+        params.set("session", chartSession);
+      }
+
+      if (tradeDate) {
+        params.set("trade_date", tradeDate);
+      }
+      if (loadingOlder) {
+        params.set("before", String(before));
+        setChartLoadingMore(true);
+      } else {
+        setChartLoadingMore(false);
+        setChartLoading(true);
+      }
+
       try {
-        const [chartResp, sectorsResp, calendarResp] = await Promise.all([
-          fetch(
-            `/api/market/chart?symbol=${encodeURIComponent(homeIndex)}&period=${chartTf}${tradeDate ? `&trade_date=${encodeURIComponent(tradeDate)}` : ""}`
-          ),
-          fetch("/api/market/sectors"),
-          fetch("/api/market/calendar?days=7"),
-        ]);
-        const [chartData, sectorsData, calendarData] = await Promise.all([
-          chartResp.ok ? chartResp.json() : Promise.resolve({ points: [] }),
-          sectorsResp.ok ? sectorsResp.json() : Promise.resolve({ sectors: [] }),
-          calendarResp.ok ? calendarResp.json() : Promise.resolve({ events: [] }),
-        ]);
-        if (cancelled) return;
-        const points = Array.isArray(chartData) ? chartData : chartData.points ?? [];
-        const bars = Array.isArray(chartData) ? [] : chartData.bars ?? [];
-        setIndexChart(points);
-        setIndexBars(bars);
-        setSectors(sectorsData.sectors ?? []);
-        setCalendar(
-          (calendarData.events ?? []).filter((event: CalendarEvent) =>
-            ["H", "M", "HIGH", "MEDIUM"].includes(String(event.impact).toUpperCase())
-          )
-        );
+        const response = await fetch(apiUrl(`/api/market/chart?${params.toString()}`));
+        const payload: ChartPayload = response.ok
+          ? await response.json()
+          : { bars: [], points: [], has_more: false };
+
+        if (
+          !mountedRef.current ||
+          (loadingOlder ? requestId !== backfillChartRequestRef.current : requestId !== baseChartRequestRef.current)
+        ) {
+          return;
+        }
+
+        const nextBars = payload.bars ?? [];
+        const nextPoints = payload.points ?? [];
+
+        if (loadingOlder) {
+          setIndexBars((current) => mergeOlderSeries(current, nextBars));
+          setIndexChart((current) => mergeOlderSeries(current, nextPoints));
+        } else {
+          setIndexBars(nextBars);
+          setIndexChart(nextPoints);
+        }
+
+        setChartHasMore(Boolean(payload.has_more));
       } catch {
-        if (!cancelled) {
-          setIndexChart([]);
+        if (
+          !mountedRef.current ||
+          (loadingOlder ? requestId !== backfillChartRequestRef.current : requestId !== baseChartRequestRef.current)
+        ) {
+          return;
+        }
+
+        if (!loadingOlder) {
           setIndexBars([]);
-          setSectors([]);
-          setCalendar([]);
+          setIndexChart([]);
+          setChartHasMore(false);
+        }
+      } finally {
+        if (!mountedRef.current) {
+          return;
+        }
+
+        if (loadingOlder) {
+          setChartLoadingMore(false);
+        } else {
+          setChartLoading(false);
         }
       }
-    };
+    },
+    [chartInterval, chartSession, chartSymbol, hasOverview, sessionTimingSupported, tradeDate]
+  );
 
-    fetchMarketPanels();
-    return () => {
-      cancelled = true;
-    };
-  }, [chartTf, overview?.regime]);
+  useEffect(() => {
+    if (!hasOverview) {
+      return;
+    }
+    void fetchChartChunk();
+  }, [fetchChartChunk, hasOverview, chartSymbol, tradeDate]);
+
+  const handleLoadMore = useCallback(
+    (oldestTime: number) => {
+      if (chartLoading || chartLoadingMore || !chartHasMore) {
+        return;
+      }
+      void fetchChartChunk(oldestTime);
+    },
+    [chartHasMore, chartLoading, chartLoadingMore, fetchChartChunk]
+  );
 
   if (loading) {
     return (
@@ -131,11 +253,11 @@ export function MarketScreen() {
             <div className={styles.regimeCard}>
               <div className={styles.regimeLabel}>{overview.regime.label}</div>
               <div className={styles.regimeMeta}>
-                <span>Trend: {overview.regime.trend}</span>
-                <span>Breadth: {overview.regime.breadth}</span>
-                <span>Volatility: {overview.regime.volatility}</span>
+                <span>Confidence: {overview.regime.confidence}%</span>
+                <span>Entry: {overview.regime.suggested_entry_mode}</span>
+                <span>Event Risk: {overview.regime.event_risk_flag ? "Elevated" : "Normal"}</span>
               </div>
-              <div className={styles.regimeDate}>As of {overview.regime.as_of}</div>
+              <div className={styles.regimeDate}>As of {tradeDate ?? "latest session"}</div>
             </div>
           </section>
 
@@ -145,7 +267,7 @@ export function MarketScreen() {
               {overview.indices.map((idx) => (
                 <div key={idx.symbol} className={styles.indexTile}>
                   <div className={styles.indexSymbol}>{idx.symbol}</div>
-                  <div className={styles.indexName}>{idx.name}</div>
+                  <div className={styles.indexName}>{idx.label}</div>
                   <div className={styles.indexPrice}>{idx.price.toFixed(2)}</div>
                   <div className={`${styles.indexChange} ${idx.change_pct >= 0 ? styles.positive : styles.negative}`}>
                     {idx.change_pct >= 0 ? "+" : ""}{idx.change_pct.toFixed(2)}%
@@ -157,32 +279,66 @@ export function MarketScreen() {
 
           <section className={styles.section}>
             <div className={styles.sectionHeader}>
-              <h2 className={styles.sectionTitle}>{homeIndexForMarket(((overview as { home_market?: string } | null)?.home_market ?? overview.regime.home_market))} trend</h2>
-              <div className={styles.chartModeGroup} aria-label="Chart type">
-                <button
-                  type="button"
-                  aria-pressed={chartMode === "candlestick"}
-                  className={`${styles.chartModeBtn} ${chartMode === "candlestick" ? styles.chartModeBtnActive : ""}`}
-                  onClick={() => setChartMode("candlestick")}
-                >
-                  Candles
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={chartMode === "line"}
-                  className={`${styles.chartModeBtn} ${chartMode === "line" ? styles.chartModeBtnActive : ""}`}
-                  onClick={() => setChartMode("line")}
-                >
-                  Line
-                </button>
+              <h2 className={styles.sectionTitle}>{chartSymbol} trend</h2>
+              <div className={styles.chartControlStack}>
+                {sessionTimingSupported ? (
+                  <div className={styles.chartModeGroup} aria-label="Trading session">
+                    <button
+                      type="button"
+                      aria-pressed={chartSession === "regular"}
+                      className={`${styles.chartModeBtn} ${chartSession === "regular" ? styles.chartModeBtnActive : ""}`}
+                      onClick={() => setChartSession("regular")}
+                    >
+                      Regular
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={chartSession === "extended"}
+                      className={`${styles.chartModeBtn} ${chartSession === "extended" ? styles.chartModeBtnActive : ""}`}
+                      onClick={() => setChartSession("extended")}
+                    >
+                      Extended
+                    </button>
+                  </div>
+                ) : intradayChart ? (
+                  <div className={styles.sessionHint}>Session timing unavailable for this market</div>
+                ) : (
+                  <div className={styles.sessionHint}>Session timing appears on intraday charts</div>
+                )}
+                <div className={styles.chartModeGroup} aria-label="Chart type">
+                  <button
+                    type="button"
+                    aria-pressed={chartMode === "candlestick"}
+                    className={`${styles.chartModeBtn} ${chartMode === "candlestick" ? styles.chartModeBtnActive : ""}`}
+                    onClick={() => setChartMode("candlestick")}
+                  >
+                    Candles
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={chartMode === "line"}
+                    className={`${styles.chartModeBtn} ${chartMode === "line" ? styles.chartModeBtnActive : ""}`}
+                    onClick={() => setChartMode("line")}
+                  >
+                    Line
+                  </button>
+                </div>
               </div>
             </div>
             <TradingChart
               mode={chartMode}
               bars={indexBars}
               lineData={indexChart}
-              timeframe={chartTf}
-              onTimeframeChange={setChartTf}
+              timeframe={chartInterval}
+              onTimeframeChange={(nextInterval) => setChartInterval(nextInterval as ChartInterval)}
+              intervalOptions={CHART_INTERVALS}
+              initialVisibleBars={CHART_INITIAL_VISIBLE_BARS[chartInterval]}
+              canLoadMore={chartHasMore}
+              loadingMore={chartLoadingMore}
+              onLoadMore={handleLoadMore}
+              loading={chartLoading && indexBars.length === 0 && indexChart.length === 0}
+              session={chartSession}
+              showSessionTiming={sessionTimingSupported}
               height={220}
             />
           </section>
@@ -197,7 +353,7 @@ export function MarketScreen() {
                   : `rgba(220, 38, 38, ${0.18 + intensity * 0.35})`;
                 return (
                   <div key={sector.symbol} className={styles.sectorTile} style={{ background }}>
-                    <span>{sector.symbol}</span>
+                    <span>{sector.label ?? sector.symbol}</span>
                     <strong className={sector.change_pct >= 0 ? styles.positive : styles.negative}>
                       {sector.change_pct >= 0 ? "+" : ""}{sector.change_pct.toFixed(2)}%
                     </strong>
@@ -224,18 +380,21 @@ export function MarketScreen() {
             <h2 className={styles.sectionTitle}>Breadth</h2>
             <div className={styles.breadthRow}>
               <div className={styles.breadthItem}>
-                <span className={styles.breadthValue + " " + styles.positive}>{overview.breadth.advancing}</span>
-                <span className={styles.breadthLabel}>Advancing</span>
+                <span className={styles.breadthValue + " " + styles.positive}>{overview.breadth.pct_above_50d.toFixed(1)}%</span>
+                <span className={styles.breadthLabel}>Above 50D</span>
               </div>
               <div className={styles.breadthItem}>
-                <span className={styles.breadthValue + " " + styles.negative}>{overview.breadth.declining}</span>
-                <span className={styles.breadthLabel}>Declining</span>
+                <span className={styles.breadthValue}>{overview.breadth.advance_decline_ratio.toFixed(2)}</span>
+                <span className={styles.breadthLabel}>A/D Ratio</span>
               </div>
               <div className={styles.breadthItem}>
-                <span className={styles.breadthValue}>{overview.breadth.unchanged}</span>
-                <span className={styles.breadthLabel}>Unchanged</span>
+                <span className={`${styles.breadthValue} ${overview.breadth.new_highs_minus_lows >= 0 ? styles.positive : styles.negative}`}>
+                  {overview.breadth.new_highs_minus_lows >= 0 ? "+" : ""}{overview.breadth.new_highs_minus_lows}
+                </span>
+                <span className={styles.breadthLabel}>NH-NL</span>
               </div>
             </div>
+            <div className={styles.regimeDate}>{overview.breadth.headline}</div>
           </section>
         </div>
       ) : (

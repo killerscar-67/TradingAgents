@@ -1,10 +1,6 @@
 const explicitApiBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
 function defaultHttpBase(): string {
-  if (typeof window === "undefined") return "";
-  if (window.location.port === "5173") {
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
-  }
   return "";
 }
 

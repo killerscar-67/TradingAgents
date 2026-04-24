@@ -18,6 +18,18 @@ except ImportError:
     _FASTAPI_AVAILABLE = False
 
 
+class _FakeSyncThread:
+    """Runs the thread target synchronously in the calling thread — keeps tests deterministic."""
+
+    def __init__(self, target=None, args=(), daemon=None, **_kwargs):
+        self._target = target
+        self._args = args
+
+    def start(self):
+        if self._target:
+            self._target(*self._args)
+
+
 def _make_daily_history(*, start: float = 100.0, step: float = 1.0, periods: int = 260) -> pd.DataFrame:
     idx = pd.date_range("2025-01-01", periods=periods, freq="B")
     close = pd.Series([start + (step * i) for i in range(periods)], index=idx, dtype=float)
@@ -214,30 +226,118 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertGreater(body["indices"][0]["price"], 0)
         self.assertEqual(body["breadth"]["pct_above_50d"], 100.0)
 
+    def test_market_overview_downloads_only_requested_home_market(self):
+        calls = []
+
+        def mock_download(symbols, start, end):
+            calls.append(list(symbols))
+            return self._mock_market_download(symbols, start, end)
+
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=mock_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["home_market"], "US")
+        self.assertIn("HK", body["regions"])
+        requested_symbols = {symbol for call in calls for symbol in call}
+        self.assertIn("^GSPC", requested_symbols)
+        self.assertIn("XLK", requested_symbols)
+        self.assertIn("HYG", requested_symbols)
+        self.assertNotIn("^HSI", requested_symbols)
+        self.assertNotIn("^N225", requested_symbols)
+        self.assertEqual(len(calls), 1)
+
     def test_daily_history_skips_known_unavailable_yahoo_symbols(self):
         from tradingagents.web.workflow_service import _download_daily_history
 
-        with patch("tradingagents.web.workflow_service.yf.download", return_value=_make_daily_history()) as mock_download:
+        with patch("tradingagents.web.workflow_service._download_yfinance_daily", return_value=_make_daily_history()) as mock_download:
             histories = _download_daily_history(["^VHSI", "AAPL"], "2026-01-01", "2026-01-31")
         self.assertTrue(histories["^VHSI"].empty)
         self.assertFalse(histories["AAPL"].empty)
         mock_download.assert_called_once()
         self.assertEqual(mock_download.call_args.args[0], "AAPL")
 
-    def test_market_chart_route_returns_candles_and_line_points(self):
+    def test_daily_history_retries_missing_batch_symbol_individually(self):
+        from tradingagents.web.workflow_service import _download_daily_history
+
+        def mock_download(symbols, start, end, *, threads):
+            if isinstance(symbols, list):
+                self.assertEqual(symbols, ["AAPL", "GOOGL"])
+                return _make_yfinance_multiindex_history("AAPL", start=100.0, step=1.0)
+            self.assertEqual(symbols, "GOOGL")
+            self.assertFalse(threads)
+            return _make_yfinance_multiindex_history("GOOGL", start=100.0, step=1.0)
+
+        with patch("tradingagents.web.workflow_service._download_yfinance_daily", side_effect=mock_download) as mock_download_fn:
+            histories = _download_daily_history(["AAPL", "GOOGL"], "2026-01-01", "2026-01-31")
+        self.assertFalse(histories["AAPL"].empty)
+        self.assertFalse(histories["GOOGL"].empty)
+        self.assertEqual(mock_download_fn.call_count, 2)
+
+    def test_market_chart_route_returns_chunked_daily_candles_and_line_points(self):
         with patch("tradingagents.web.workflow_service._download_daily_history", return_value={"SPY": _make_daily_history()}):
-            resp = self.client.get("/api/market/chart?symbol=SPY&period=1M&trade_date=2026-04-23")
+            resp = self.client.get("/api/market/chart?symbol=SPY&interval=1D&limit=40&trade_date=2026-04-23")
 
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["symbol"], "SPY")
-        self.assertEqual(body["period"], "1M")
-        self.assertGreater(len(body["points"]), 10)
-        self.assertGreater(len(body["bars"]), 10)
+        self.assertEqual(body["interval"], "1D")
+        self.assertEqual(body["limit"], 40)
+        self.assertTrue(body["has_more"])
+        self.assertEqual(len(body["points"]), 40)
+        self.assertEqual(len(body["bars"]), 40)
         self.assertIn("time", body["points"][0])
         self.assertIn("value", body["points"][0])
         self.assertIn("open", body["bars"][0])
         self.assertIn("close", body["bars"][0])
+        self.assertEqual(body["oldest_time"], body["bars"][0]["time"])
+        self.assertEqual(body["newest_time"], body["bars"][-1]["time"])
+
+    def test_market_chart_route_supports_cursor_backfill(self):
+        history = _make_daily_history(periods=260)
+
+        with patch("tradingagents.web.workflow_service._download_daily_history", return_value={"SPY": history}):
+            latest = self.client.get("/api/market/chart?symbol=SPY&interval=1D&limit=20&trade_date=2026-04-23")
+
+        self.assertEqual(latest.status_code, 200)
+        latest_body = latest.json()
+        oldest_time = latest_body["oldest_time"]
+        self.assertIsNotNone(oldest_time)
+
+        with patch("tradingagents.web.workflow_service._download_daily_history", return_value={"SPY": history}):
+            older = self.client.get(
+                f"/api/market/chart?symbol=SPY&interval=1D&limit=20&before={oldest_time}&trade_date=2026-04-23"
+            )
+
+        self.assertEqual(older.status_code, 200)
+        older_body = older.json()
+        self.assertEqual(older_body["interval"], "1D")
+        self.assertLess(older_body["newest_time"], oldest_time)
+        self.assertLess(older_body["bars"][-1]["time"], latest_body["bars"][0]["time"])
+        self.assertEqual(len(older_body["bars"]), 20)
+
+    def test_market_chart_route_supports_intraday_intervals(self):
+        with patch("tradingagents.web.workflow_service.get_intraday_bars", return_value=_make_intraday_bars()):
+            resp = self.client.get("/api/market/chart?symbol=SPY&interval=15m&limit=30&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["interval"], "15m")
+        self.assertEqual(body["limit"], 30)
+        self.assertEqual(len(body["bars"]), 30)
+        self.assertEqual(len(body["points"]), 30)
+        self.assertIn("high", body["bars"][0])
+        self.assertIn("low", body["bars"][0])
+
+    def test_market_chart_route_forwards_intraday_session(self):
+        with patch("tradingagents.web.workflow_service.get_intraday_bars", return_value=_make_intraday_bars()) as mock_intraday:
+            resp = self.client.get("/api/market/chart?symbol=SPY&interval=15m&session=extended&limit=30&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_intraday.call_args.kwargs["session"], "extended")
 
     def test_market_live_websocket_streams_multiple_snapshots(self):
         payload = _screening_regime("US")
@@ -348,7 +448,7 @@ class WorkflowContractTests(unittest.TestCase):
         ), patch("tradingagents.web.workflow_service.run_backtest", return_value=_FakeBacktestResult("AAPL", 53_000.0)), patch(
             "tradingagents.web.workflow_service.run_walk_forward",
             return_value=_FakeWalkForward(),
-        ):
+        ), patch("tradingagents.web.workflow_service._thread_cls", new=_FakeSyncThread):
             screening = self.client.post(
                 "/api/screening/runs",
                 json={
@@ -700,7 +800,7 @@ class WorkflowContractTests(unittest.TestCase):
         with patch("tradingagents.web.workflow_service.runner.create_run", side_effect=fake_create_run), patch(
             "tradingagents.web.workflow_service.runner.run_sync",
             side_effect=fake_run_sync,
-        ):
+        ), patch("tradingagents.web.workflow_service._thread_cls", new=_FakeSyncThread):
             resp = self.client.post(
                 "/api/batches",
                 json={

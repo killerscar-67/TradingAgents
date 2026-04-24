@@ -93,33 +93,50 @@ export type Screen =
   | "settings";
 
 export interface RegimeData {
+  home_market?: string;
   label: string;
-  trend: string;
-  breadth: string;
-  volatility: string;
-  home_market: string;
-  as_of: string;
-  status: string;
+  confidence: number;
+  suggested_entry_mode: string;
+  event_risk_flag: boolean;
+  inputs?: Record<string, unknown>;
 }
 
 export interface BreadthData {
-  advancing: number;
-  declining: number;
-  unchanged: number;
+  pct_above_50d: number;
+  pct_above_200d: number;
+  new_highs_minus_lows: number;
+  advance_decline_ratio: number;
+  mcclellan_oscillator: number;
+  headline: string;
 }
 
 export interface IndexTile {
   symbol: string;
-  name: string;
+  label: string;
   price: number;
   change_pct: number;
-  status: string;
+}
+
+export interface SectorTile {
+  symbol: string;
+  label?: string;
+  change_pct: number;
+}
+
+export interface MarketCalendarEvent {
+  date: string;
+  name: string;
+  impact: string;
 }
 
 export interface MarketOverview {
+  home_market?: string;
+  trade_date?: string;
   regime: RegimeData;
   indices: IndexTile[];
   breadth: BreadthData;
+  sectors?: SectorTile[];
+  events?: MarketCalendarEvent[];
   status: string;
 }
 

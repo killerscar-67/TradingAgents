@@ -146,9 +146,17 @@ export function BatchScreen() {
   const readyCount = resultsList.filter((r) => r.status === "completed").length;
   const feedEvents = events.slice(-50);
 
-  const formatEventTime = (timestamp: number) => {
-    const millis = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
-    return new Date(millis).toLocaleTimeString();
+  const formatEventTime = (timestamp?: number | string) => {
+    if (timestamp === undefined || timestamp === null || timestamp === "") {
+      return "--:--:--";
+    }
+    const date = typeof timestamp === "number"
+      ? new Date(timestamp > 10_000_000_000 ? timestamp : timestamp * 1000)
+      : new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return "--:--:--";
+    }
+    return date.toLocaleTimeString();
   };
 
   return (
@@ -280,7 +288,7 @@ export function BatchScreen() {
               <div className={styles.feedEntry}>Waiting for batch events...</div>
             ) : (
               feedEvents.map((event, index) => (
-                <div className={styles.feedEntry} key={`${event.sequence ?? index}-${event.timestamp}`}>
+                <div className={styles.feedEntry} key={`${event.sequence ?? index}-${event.timestamp ?? index}`}>
                   [{formatEventTime(event.timestamp)}] {event.symbol ?? "BATCH"} - {event.type}:{" "}
                   {event.status ?? event.rating ?? event.error ?? ""}
                 </div>

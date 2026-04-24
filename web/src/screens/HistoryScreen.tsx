@@ -40,6 +40,18 @@ function formatHistoryType(type: string): string {
   return type.replace(/_/g, " ");
 }
 
+function formatRecordTime(timestamp: string | null): string {
+  if (!timestamp) return "Unknown time";
+
+  const value = new Date(timestamp);
+  if (Number.isNaN(value.getTime())) return "Unknown time";
+
+  return value.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function HistoryScreen() {
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,10 +145,12 @@ export function HistoryScreen() {
               <div className={styles.runList}>
                 {grouped[date].map((item) => {
                   const statusClass = normalizeHistoryStatus(item.status);
+                  const recordTimestamp = item.completed_at || item.created_at;
                   return (
                     <div key={item.id} className={styles.runRow}>
                       <span className={styles.runTicker}>{item.title}</span>
                       <span className={styles.runMode}>{formatHistoryType(item.type)}</span>
+                      <span className={styles.runTime}>{formatRecordTime(recordTimestamp)}</span>
                       <span className={styles.runProvider}>
                         {item.summary || item.home_market || item.workflow_session_id || item.id}
                       </span>

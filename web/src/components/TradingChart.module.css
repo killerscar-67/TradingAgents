@@ -1,5 +1,6 @@
 .controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 8px;
 }
@@ -30,6 +31,83 @@
   border-radius: 6px;
   overflow: hidden;
   border: 1px solid #1e293b;
+}
+
+.chartFrame {
+  position: relative;
+  width: 100%;
+}
+
+.sessionOverlay {
+  border-radius: 6px;
+  inset: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+}
+
+.sessionBand {
+  bottom: 0;
+  position: absolute;
+  top: 0;
+}
+
+.sessionBandPremarket {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.sessionBandAfterhours {
+  background: rgba(249, 115, 22, 0.08);
+}
+
+.sessionBoundary {
+  bottom: 0;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.sessionBoundaryOpen {
+  background: rgba(125, 211, 252, 0.55);
+}
+
+.sessionBoundaryClose {
+  background: rgba(251, 191, 36, 0.55);
+}
+
+.sessionLegend {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 11px;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sessionLegendItem {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.sessionSwatch {
+  border-radius: 999px;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.sessionSwatchPremarket {
+  background: rgba(56, 189, 248, 0.85);
+}
+
+.sessionSwatchRegular {
+  background: rgba(148, 163, 184, 0.8);
+}
+
+.sessionSwatchAfterhours {
+  background: rgba(249, 115, 22, 0.85);
 }
 
 .placeholder {

@@ -14,14 +14,17 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from tradingagents.web import runner
 from tradingagents.web.storage import get_workflow_store
 from tradingagents.web.workflow_service import (
     build_strategy_from_batch,
+    cancel_batch,
     get_market_chart as build_market_chart,
     get_market_overview as build_market_overview,
     resolve_basket_items,
+    retry_batch_item_analysis,
     run_backtest_for_strategy,
     run_batch_analysis,
     run_screening,
@@ -103,9 +106,9 @@ class BatchRequest(BaseModel):
         default_factory=lambda: ["market", "social", "news", "fundamentals"]
     )
     execution_mode: str = "llm_assisted"
-    llm_provider: str = "openai"
-    deep_think_llm: str = "gpt-5.4"
-    quick_think_llm: str = "gpt-5.4-mini"
+    llm_provider: Optional[str] = None
+    deep_think_llm: Optional[str] = None
+    quick_think_llm: Optional[str] = None
 
     @field_validator("selected_analysts")
     @classmethod
@@ -189,25 +192,42 @@ def get_market_overview(home_market: str = "US", trade_date: Optional[str] = Non
 
 
 @router.get("/api/market/chart")
-def get_market_chart(symbol: str = Query(...), period: str = "1M", trade_date: Optional[str] = None) -> Dict[str, Any]:
-    return build_market_chart(symbol, period, trade_date)
+def get_market_chart(
+    symbol: str = Query(...),
+    interval: Optional[str] = None,
+    limit: Optional[int] = None,
+    before: Optional[int] = None,
+    period: Optional[str] = None,
+    trade_date: Optional[str] = None,
+    session: Optional[str] = None,
+) -> Dict[str, Any]:
+    return build_market_chart(
+        symbol,
+        interval=interval or period,
+        limit=limit,
+        before=before,
+        trade_date=trade_date,
+        session=session,
+    )
 
 
 @router.websocket("/api/market/live")
 async def stream_market_live(websocket: WebSocket) -> None:
     await websocket.accept()
-    interval_seconds = max(float(websocket.query_params.get("interval_seconds", "5") or "5"), 0.01)
+    interval_seconds = max(float(websocket.query_params.get("interval_seconds", "60") or "60"), 0.01)
     try:
         while True:
             settings = get_workflow_store().get_settings_without_status()
+            payload = await run_in_threadpool(
+                build_market_overview,
+                websocket.query_params.get("home_market", "US"),
+                websocket.query_params.get("trade_date"),
+                settings,
+            )
             await websocket.send_json(
                 {
                     "type": "market_snapshot",
-                    "payload": build_market_overview(
-                        websocket.query_params.get("home_market", "US"),
-                        websocket.query_params.get("trade_date"),
-                        settings,
-                    ),
+                    "payload": payload,
                 }
             )
             await asyncio.sleep(interval_seconds)
@@ -267,17 +287,53 @@ def create_batch(req: BatchRequest) -> Dict[str, Any]:
     }
 
 
+_BATCH_TERMINAL_STATUSES = {"completed", "error", "partial_failure", "stopped", "not_found"}
+
+
 @router.get("/api/batches/{batch_id}/events")
 async def stream_batch_events(batch_id: str) -> StreamingResponse:
     async def generator():
-        batch = get_workflow_store().get_analysis_batch(batch_id)
-        if batch is None:
+        store = get_workflow_store()
+        if store.get_analysis_batch(batch_id) is None:
             yield f"data: {json.dumps({'type': 'batch_status', 'batch_id': batch_id, 'status': 'not_found'})}\n\n"
             return
-        for event in batch.get("events", []):
-            yield f"data: {json.dumps(event)}\n\n"
+
+        sent = 0
+        while True:
+            batch = store.get_analysis_batch(batch_id)
+            if batch is None:
+                break
+            events = batch.get("events", [])
+            for event in events[sent:]:
+                yield f"data: {json.dumps(event)}\n\n"
+            sent = len(events)
+            if batch.get("status") in _BATCH_TERMINAL_STATUSES:
+                break
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(generator(), media_type="text/event-stream")
+
+
+@router.post("/api/batches/{batch_id}/stop")
+def stop_batch(batch_id: str) -> Dict[str, Any]:
+    store = get_workflow_store()
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    cancel_batch(batch_id)
+    store.update_analysis_batch(batch_id, status="stopped")
+    return {"batch_id": batch_id, "status": "stopped"}
+
+
+@router.post("/api/batches/{batch_id}/items/{symbol}/retry")
+def retry_batch_item(batch_id: str, symbol: str) -> Dict[str, Any]:
+    store = get_workflow_store()
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    settings = store.get_settings_without_status()
+    retry_batch_item_analysis(batch_id, symbol.upper(), store, settings)
+    return {"batch_id": batch_id, "symbol": symbol.upper(), "status": "queued"}
 
 
 @router.post("/api/strategies/from-batch")

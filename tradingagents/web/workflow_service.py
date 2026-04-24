@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -10,6 +12,7 @@ from urllib.request import urlopen
 
 import pandas as pd
 import yfinance as yf
+import yfinance.utils as yf_utils
 
 from tradingagents.dataflows.interface import get_intraday_bars
 from tradingagents.quant.backtest import run_backtest, run_trade_plan_backtest
@@ -17,6 +20,21 @@ from tradingagents.quant.contracts import EntryEngine, EntrySignal
 from tradingagents.quant.risk import compute_stops, size_position
 from tradingagents.quant.walkforward import run_walk_forward
 from tradingagents.web import runner
+
+
+_cancelled_batches: set = set()
+_cancelled_lock = threading.Lock()
+_thread_cls = threading.Thread  # test-injectable; patching threading.Thread globally breaks anyio
+
+
+def cancel_batch(batch_id: str) -> None:
+    with _cancelled_lock:
+        _cancelled_batches.add(batch_id)
+
+
+def _is_cancelled(batch_id: str) -> bool:
+    with _cancelled_lock:
+        return batch_id in _cancelled_batches
 
 
 MARKET_DEFINITIONS: Dict[str, Dict[str, Any]] = {
@@ -84,17 +102,66 @@ UNIVERSE_ALIASES = {
 }
 
 YFINANCE_UNAVAILABLE_SYMBOLS = {"^VHSI"}
-CHART_PERIOD_LOOKBACK_DAYS = {
-    "1D": 7,
-    "1W": 14,
-    "1M": 45,
-    "3M": 120,
-    "1Y": 400,
+DEFAULT_CHART_INTERVAL = "1D"
+MAX_CHART_LIMIT = 400
+CHART_INTERVAL_CONFIG: Dict[str, Dict[str, Any]] = {
+    "15m": {
+        "kind": "intraday",
+        "fetch_interval": "15m",
+        "default_limit": 104,
+        "lookback_days": 20,
+        "session": "regular",
+    },
+    "4h": {
+        "kind": "intraday",
+        "fetch_interval": "4h",
+        "default_limit": 90,
+        "lookback_days": 260,
+        "session": "regular",
+    },
+    "1D": {
+        "kind": "daily",
+        "default_limit": 160,
+        "lookback_days": 420,
+    },
+    "1W": {
+        "kind": "daily",
+        "default_limit": 104,
+        "lookback_days": 1600,
+        "resample_rule": "W-FRI",
+    },
+    "1M": {
+        "kind": "daily",
+        "default_limit": 72,
+        "lookback_days": 3200,
+        "resample_rule": "ME",
+    },
 }
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _empty_breadth() -> Dict[str, Any]:
+    return {
+        "pct_above_50d": 0.0,
+        "pct_above_200d": 0.0,
+        "new_highs_minus_lows": 0,
+        "advance_decline_ratio": 0.0,
+        "mcclellan_oscillator": 0.0,
+        "headline": "Breadth unavailable",
+    }
+
+
+def _neutral_regime() -> Dict[str, Any]:
+    return {
+        "label": "Choppy / range-bound",
+        "confidence": 0,
+        "suggested_entry_mode": "auto",
+        "event_risk_flag": False,
+        "inputs": {},
+    }
 
 
 def _json_safe_float(value: Any, default: float = 0.0) -> float:
@@ -150,6 +217,162 @@ def _resolve_screening_universe(universe: str, custom_symbols: List[str], home_m
     return universe or market, list(MARKET_DEFINITIONS[market]["universe"])
 
 
+def _normalize_chart_interval(interval: Optional[str]) -> str:
+    value = (interval or DEFAULT_CHART_INTERVAL).strip()
+    aliases = {
+        "15m": "15m",
+        "4h": "4h",
+        "1d": "1D",
+        "1D": "1D",
+        "1w": "1W",
+        "1W": "1W",
+        "1m": "1M",
+        "1M": "1M",
+    }
+    normalized = aliases.get(value, aliases.get(value.lower()))
+    if normalized is None:
+        raise ValueError(f"interval must be one of {sorted(CHART_INTERVAL_CONFIG)!r}")
+    return normalized
+
+
+def _coerce_chart_limit(interval: str, limit: Optional[int]) -> int:
+    default = int(CHART_INTERVAL_CONFIG[interval]["default_limit"])
+    if limit is None:
+        return default
+    try:
+        resolved = int(limit)
+    except (TypeError, ValueError):
+        return default
+    return max(10, min(MAX_CHART_LIMIT, resolved))
+
+
+def _chart_anchor_dt(trade_date: Optional[str], before: Optional[int]) -> datetime:
+    if before is not None:
+        return datetime.fromtimestamp(int(before), tz=timezone.utc).replace(tzinfo=None)
+    raw_date = trade_date or date.today().isoformat()
+    try:
+        return datetime.fromisoformat(raw_date).replace(tzinfo=None)
+    except ValueError as exc:
+        raise ValueError(f"Invalid trade_date {raw_date!r}; expected ISO date format YYYY-MM-DD") from exc
+
+
+def _normalize_time_index(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    normalized = frame.copy()
+    index = pd.to_datetime(normalized.index)
+    tz = getattr(index, "tz", None)
+    if tz is not None:
+        index = index.tz_convert("UTC").tz_localize(None)
+    normalized.index = index
+    return normalized.sort_index()
+
+
+def _history_to_ohlc_frame(history: pd.DataFrame) -> pd.DataFrame:
+    frame = pd.concat(
+        [
+            _history_series(history, "Open").rename("open"),
+            _history_series(history, "High").rename("high"),
+            _history_series(history, "Low").rename("low"),
+            _history_series(history, "Close").rename("close"),
+        ],
+        axis=1,
+    ).dropna(subset=["open", "high", "low", "close"])
+    return _normalize_time_index(frame)
+
+
+def _download_yfinance_daily(tickers: str | List[str], start: str, end: str, *, threads: bool) -> pd.DataFrame:
+    logger = yf_utils.get_yf_logger()
+    previous_level = logger.level
+    try:
+        # yfinance logs transient partial-batch misses as "possibly delisted" before callers can retry.
+        logger.setLevel(logging.CRITICAL + 1)
+        downloaded = yf.download(
+            tickers,
+            start=start,
+            end=end,
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+            threads=threads,
+            timeout=10,
+        )
+    finally:
+        logger.setLevel(previous_level)
+    return downloaded if isinstance(downloaded, pd.DataFrame) else pd.DataFrame()
+
+
+def _extract_symbol_history(downloaded: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    if downloaded.empty:
+        return pd.DataFrame()
+    if isinstance(downloaded.columns, pd.MultiIndex):
+        if symbol in downloaded.columns.get_level_values(0):
+            frame = downloaded.xs(symbol, axis=1, level=0, drop_level=True)
+        elif symbol in downloaded.columns.get_level_values(downloaded.columns.nlevels - 1):
+            frame = downloaded.xs(symbol, axis=1, level=downloaded.columns.nlevels - 1, drop_level=True)
+        else:
+            return pd.DataFrame()
+        return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    return downloaded
+
+
+def _has_close_history(history: pd.DataFrame) -> bool:
+    return not _history_series(history, "Close").empty
+
+
+def _resample_ohlc_frame(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    resampled = frame.resample(rule, closed="right", label="right").agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+        }
+    )
+    return resampled.dropna(subset=["open", "high", "low", "close"])
+
+
+def _serialize_chart_payload(
+    symbol: str,
+    interval: str,
+    limit: int,
+    frame: pd.DataFrame,
+) -> Dict[str, Any]:
+    bars: List[Dict[str, Any]] = []
+    points: List[Dict[str, Any]] = []
+    for timestamp, row in frame.iterrows():
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        unix_time = int(ts.timestamp())
+        close = round(float(row["close"]), 4)
+        points.append({"time": unix_time, "value": close})
+        bars.append(
+            {
+                "time": unix_time,
+                "open": round(float(row["open"]), 4),
+                "high": round(float(row["high"]), 4),
+                "low": round(float(row["low"]), 4),
+                "close": close,
+            }
+        )
+
+    oldest_time = bars[0]["time"] if bars else None
+    newest_time = bars[-1]["time"] if bars else None
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit,
+        "has_more": False,
+        "oldest_time": oldest_time,
+        "newest_time": newest_time,
+        "points": points,
+        "bars": bars,
+    }
+
+
 def _download_daily_history(symbols: Iterable[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
     ordered_symbols = list(dict.fromkeys(symbols))
     result: Dict[str, pd.DataFrame] = {}
@@ -163,33 +386,20 @@ def _download_daily_history(symbols: Iterable[str], start: str, end: str) -> Dic
     if not active_symbols:
         return result
 
-    downloaded = yf.download(
+    downloaded = _download_yfinance_daily(
         active_symbols[0] if len(active_symbols) == 1 else active_symbols,
-        start=start,
-        end=end,
-        auto_adjust=False,
-        progress=False,
-        group_by="ticker",
+        start,
+        end,
         threads=True,
-        timeout=10,
     )
-    if not isinstance(downloaded, pd.DataFrame):
-        for symbol in active_symbols:
-            result[symbol] = pd.DataFrame()
-        return result
-
-    if len(active_symbols) == 1:
-        result[active_symbols[0]] = downloaded
-        return result
-
     for symbol in active_symbols:
-        frame = pd.DataFrame()
-        if isinstance(downloaded.columns, pd.MultiIndex):
-            if symbol in downloaded.columns.get_level_values(0):
-                frame = downloaded.xs(symbol, axis=1, level=0, drop_level=True)
-            elif symbol in downloaded.columns.get_level_values(downloaded.columns.nlevels - 1):
-                frame = downloaded.xs(symbol, axis=1, level=downloaded.columns.nlevels - 1, drop_level=True)
-        result[symbol] = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+        result[symbol] = _extract_symbol_history(downloaded, symbol) if len(active_symbols) > 1 else downloaded
+
+    missing_symbols = [symbol for symbol in active_symbols if not _has_close_history(result.get(symbol, pd.DataFrame()))]
+    for symbol in missing_symbols:
+        retry_frame = _download_yfinance_daily(symbol, start, end, threads=False)
+        if _has_close_history(retry_frame):
+            result[symbol] = retry_frame
     return result
 
 
@@ -268,14 +478,7 @@ def _compute_breadth(universe_histories: Dict[str, pd.DataFrame]) -> Dict[str, A
         breadth_series.extend(float(v) for v in returns.tail(20))
 
     if valid == 0:
-        return {
-            "pct_above_50d": 0.0,
-            "pct_above_200d": 0.0,
-            "new_highs_minus_lows": 0,
-            "advance_decline_ratio": 0.0,
-            "mcclellan_oscillator": 0.0,
-            "headline": "Breadth unavailable",
-        }
+        return _empty_breadth()
 
     breadth = pd.Series(breadth_series, dtype=float)
     ema19 = breadth.ewm(span=19, adjust=False).mean().iloc[-1] if not breadth.empty else 0.0
@@ -452,25 +655,42 @@ def _fetch_calendar_events(provider: str, regions: Iterable[str], start_date: st
 
 
 def get_market_overview(home_market: str, trade_date: Optional[str], settings: Dict[str, Any]) -> Dict[str, Any]:
-    resolved_market = home_market.upper() if home_market.upper() in MARKET_DEFINITIONS else settings.get("home_market", "US")
+    requested_market = (home_market or "").upper()
+    settings_market = str(settings.get("home_market", "US") or "US").upper()
+    resolved_market = requested_market if requested_market in MARKET_DEFINITIONS else settings_market
+    if resolved_market not in MARKET_DEFINITIONS:
+        resolved_market = "US"
     as_of_date = trade_date or date.today().isoformat()
     start = (datetime.fromisoformat(as_of_date) - timedelta(days=400)).date().isoformat()
     end = (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat()
 
     region_payloads: Dict[str, Dict[str, Any]] = {}
     for region, definition in MARKET_DEFINITIONS.items():
+        if region != resolved_market:
+            region_payloads[region] = {
+                "indices": [],
+                "regime": _neutral_regime(),
+                "breadth": _empty_breadth(),
+                "sectors": [],
+            }
+            continue
+
         tile_symbols = [tile["symbol"] for tile in definition["tiles"]]
-        histories = _download_daily_history(tile_symbols + definition["universe"], start, end)
+        sector_symbols = [symbol for symbol, _ in definition["sector_proxies"]]
+        credit_symbols = definition.get("credit_symbols")
+        request_symbols = tile_symbols + definition["universe"] + sector_symbols
+        if credit_symbols:
+            request_symbols.extend(list(credit_symbols))
+
+        histories = _download_daily_history(request_symbols, start, end)
         benchmark_history = histories.get(definition["tiles"][0]["symbol"], pd.DataFrame())
         volatility_history = histories.get(definition["vol_symbol"], pd.DataFrame()) if definition.get("vol_symbol") else None
         breadth = _compute_breadth({symbol: histories.get(symbol, pd.DataFrame()) for symbol in definition["universe"]})
 
         credit_change_pct = None
-        credit_symbols = definition.get("credit_symbols")
         if credit_symbols:
-            credit_histories = _download_daily_history(list(credit_symbols), start, end)
-            hyg = credit_histories.get(credit_symbols[0], pd.DataFrame())
-            ief = credit_histories.get(credit_symbols[1], pd.DataFrame())
+            hyg = histories.get(credit_symbols[0], pd.DataFrame())
+            ief = histories.get(credit_symbols[1], pd.DataFrame())
             if not hyg.empty and not ief.empty and len(hyg) > 20 and len(ief) > 20:
                 ratio = _history_series(hyg, "Close").reset_index(drop=True) / _history_series(ief, "Close").reset_index(drop=True)
                 if len(ratio) > 20 and float(ratio.iloc[-21]) != 0.0:
@@ -495,9 +715,8 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
             indices.append({"symbol": tile["symbol"], "label": tile["label"], "price": round(latest, 4), "change_pct": change_pct})
 
         sectors: List[Dict[str, Any]] = []
-        sector_histories = _download_daily_history([symbol for symbol, _ in definition["sector_proxies"]], start, end)
         for symbol, label in definition["sector_proxies"]:
-            hist = sector_histories.get(symbol, pd.DataFrame())
+            hist = histories.get(symbol, pd.DataFrame())
             closes = _history_series(hist, "Close")
             if closes.empty:
                 sectors.append({"symbol": symbol, "label": label, "change_pct": 0.0})
@@ -548,58 +767,66 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
     }
 
 
-def get_market_chart(symbol: str, period: str = "1M", trade_date: Optional[str] = None) -> Dict[str, Any]:
+def get_market_chart(
+    symbol: str,
+    interval: Optional[str] = None,
+    limit: Optional[int] = None,
+    before: Optional[int] = None,
+    trade_date: Optional[str] = None,
+    session: Optional[str] = None,
+) -> Dict[str, Any]:
     normalized_symbol = (symbol or "").strip().upper()
-    normalized_period = (period or "1M").strip().upper()
+    normalized_interval = _normalize_chart_interval(interval)
+    resolved_limit = _coerce_chart_limit(normalized_interval, limit)
 
     if not normalized_symbol:
-        return {"symbol": "", "period": normalized_period, "points": [], "bars": []}
+        return {
+            "symbol": "",
+            "interval": normalized_interval,
+            "limit": resolved_limit,
+            "has_more": False,
+            "oldest_time": None,
+            "newest_time": None,
+            "points": [],
+            "bars": [],
+        }
 
-    as_of_date = trade_date or date.today().isoformat()
-    lookback_days = CHART_PERIOD_LOOKBACK_DAYS.get(normalized_period, CHART_PERIOD_LOOKBACK_DAYS["1M"])
-    start = (datetime.fromisoformat(as_of_date) - timedelta(days=lookback_days)).date().isoformat()
-    end = (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat()
-    history = _download_daily_history([normalized_symbol], start, end).get(normalized_symbol, pd.DataFrame())
+    config = CHART_INTERVAL_CONFIG[normalized_interval]
+    anchor_dt = _chart_anchor_dt(trade_date, before)
+    start = (anchor_dt.date() - timedelta(days=int(config["lookback_days"]))).isoformat()
+    end = (anchor_dt.date() + timedelta(days=1)).isoformat()
 
-    close_series = _history_series(history, "Close")
-    points: List[Dict[str, Any]] = []
-    for timestamp, value in close_series.items():
-        ts = pd.Timestamp(timestamp)
-        if ts.tzinfo is not None:
-            ts = ts.tz_localize(None)
-        points.append({"time": int(ts.timestamp()), "value": round(float(value), 4)})
-
-    ohlc = pd.concat(
-        [
-            _history_series(history, "Open").rename("open"),
-            _history_series(history, "High").rename("high"),
-            _history_series(history, "Low").rename("low"),
-            _history_series(history, "Close").rename("close"),
-        ],
-        axis=1,
-    ).dropna(subset=["open", "high", "low", "close"])
-
-    bars: List[Dict[str, Any]] = []
-    for timestamp, row in ohlc.iterrows():
-        ts = pd.Timestamp(timestamp)
-        if ts.tzinfo is not None:
-            ts = ts.tz_localize(None)
-        bars.append(
-            {
-                "time": int(ts.timestamp()),
-                "open": round(float(row["open"]), 4),
-                "high": round(float(row["high"]), 4),
-                "low": round(float(row["low"]), 4),
-                "close": round(float(row["close"]), 4),
+    if config["kind"] == "intraday":
+        chart_frame = get_intraday_bars(
+            normalized_symbol,
+            config["fetch_interval"],
+            start,
+            end,
+            session=session or config.get("session", "regular"),
+        ).rename(
+            columns={
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
             }
         )
+        chart_frame = chart_frame[["open", "high", "low", "close"]] if not chart_frame.empty else chart_frame
+        chart_frame = _normalize_time_index(chart_frame)
+    else:
+        history = _download_daily_history([normalized_symbol], start, end).get(normalized_symbol, pd.DataFrame())
+        chart_frame = _history_to_ohlc_frame(history)
+        resample_rule = config.get("resample_rule")
+        if resample_rule:
+            chart_frame = _resample_ohlc_frame(chart_frame, str(resample_rule))
 
-    return {
-        "symbol": normalized_symbol,
-        "period": normalized_period,
-        "points": points,
-        "bars": bars,
-    }
+    if before is not None and not chart_frame.empty:
+        chart_frame = chart_frame[chart_frame.index < anchor_dt]
+
+    has_more = len(chart_frame) > resolved_limit
+    payload = _serialize_chart_payload(normalized_symbol, normalized_interval, resolved_limit, chart_frame.tail(resolved_limit))
+    payload["has_more"] = has_more
+    return payload
 
 
 def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -719,58 +946,147 @@ def run_batch_analysis(request: Dict[str, Any], store, settings: Dict[str, Any])
         home_market=settings.get("home_market", "US"),
         workflow_session_id=payload.get("workflow_session_id"),
     )
-    events: List[Dict[str, Any]] = [{"type": "batch_status", "batch_id": batch["batch_id"], "status": "queued", "timestamp": _utc_now()}]
-    items: List[Dict[str, Any]] = []
+    # Seed items as queued so the SSE stream sees them before work begins.
+    items: List[Dict[str, Any]] = [
+        {"symbol": s, "run_id": None, "status": "queued"}
+        for s in payload.get("symbols", [])
+    ]
+    events: List[Dict[str, Any]] = [
+        {"type": "batch_status", "batch_id": batch["batch_id"], "status": "queued", "timestamp": _utc_now()}
+    ]
     store.update_analysis_batch(batch["batch_id"], status="running", items=items, summary={"counts": _batch_counts(items)}, events=events)
 
+    t = _thread_cls(
+        target=_run_batch_thread,
+        args=(batch["batch_id"], payload, settings),
+        daemon=True,
+    )
+    t.start()
+
+    return store.get_analysis_batch(batch["batch_id"]) or batch
+
+
+def _run_batch_thread(batch_id: str, payload: Dict[str, Any], settings: Dict[str, Any]) -> None:
+    from tradingagents.web.storage import get_workflow_store
+    store = get_workflow_store()
+
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        return
+
+    events = list(batch.get("events", []))
+    events.append({"type": "batch_status", "batch_id": batch_id, "status": "running", "timestamp": _utc_now()})
+    store.update_analysis_batch(batch_id, status="running", events=events)
+
+    llm_provider = payload.get("llm_provider") or settings.get("llm_provider", "")
+    deep_think_llm = payload.get("deep_think_llm") or settings.get("deep_think_llm", "")
+    quick_think_llm = payload.get("quick_think_llm") or settings.get("quick_think_llm", "")
+
     for symbol in payload.get("symbols", []):
-        run = runner.create_run(
-            ticker=symbol,
-            analysis_date=payload.get("analysis_date"),
-            selected_analysts=payload.get("selected_analysts", []),
-            execution_mode=payload.get("execution_mode", "llm_assisted"),
-            llm_provider=payload.get("llm_provider", "openai"),
-            deep_think_llm=payload.get("deep_think_llm", settings.get("deep_think_llm", "gpt-5.4")),
-            quick_think_llm=payload.get("quick_think_llm", settings.get("quick_think_llm", "gpt-5.4-mini")),
-        )
-        item = {"symbol": symbol, "run_id": run.run_id, "status": "running", "started_at": _utc_now()}
-        items.append(item)
-        events.append({"type": "batch_item", "batch_id": batch["batch_id"], "symbol": symbol, "run_id": run.run_id, "status": "running", "timestamp": _utc_now()})
-        store.update_analysis_batch(batch["batch_id"], status="running", items=items, summary={"counts": _batch_counts(items)}, events=events)
+        if _is_cancelled(batch_id):
+            break
+        _run_single_item(batch_id, symbol, payload, llm_provider, deep_think_llm, quick_think_llm, store)
 
-        try:
-            completed = runner.run_sync(run.run_id)
-            if completed is None:
-                raise RuntimeError("analysis run did not return a result")
-            final_order = completed.final_order_intent or {}
-            item.update(
-                {
-                    "status": "completed" if completed.status == "completed" else "failed",
-                    "completed_at": _utc_now(),
-                    "rating": final_order.get("rating", "HOLD"),
-                    "summary": completed.report_sections.get("final_trade_decision") or final_order.get("reason") or "",
-                    "report_paths": completed.report_paths,
-                    "order_intent": final_order,
-                    "error": "; ".join(completed.errors) if completed.errors else None,
-                }
-            )
-        except Exception as exc:
-            item.update({"status": "failed", "completed_at": _utc_now(), "error": str(exc), "rating": "HOLD", "summary": str(exc)})
-
-        events.append({"type": "batch_item", "batch_id": batch["batch_id"], "symbol": symbol, "run_id": run.run_id, "status": item["status"], "timestamp": _utc_now()})
-        store.update_analysis_batch(batch["batch_id"], status="running", items=items, summary={"counts": _batch_counts(items)}, events=events)
-
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        return
+    items = list(batch.get("items", []))
+    events = list(batch.get("events", []))
     counts = _batch_counts(items)
-    final_status = _batch_terminal_status(counts)
+    final_status = "stopped" if _is_cancelled(batch_id) else _batch_terminal_status(counts)
     summary = {
         "counts": counts,
         "title": f"{len(items)} ticker batch",
-        "headline": f"{counts['completed']} completed, {counts['failed']} failed",
+        "headline": f"{counts.get('completed', 0)} completed, {counts.get('failed', 0)} failed",
         "completed_at": _utc_now(),
     }
-    events.append({"type": "batch_status", "batch_id": batch["batch_id"], "status": final_status, "timestamp": _utc_now(), "counts": counts})
-    store.update_analysis_batch(batch["batch_id"], status=final_status, items=items, summary=summary, events=events)
-    return store.get_analysis_batch(batch["batch_id"]) or batch
+    events.append({"type": "batch_status", "batch_id": batch_id, "status": final_status, "timestamp": _utc_now(), "counts": counts})
+    store.update_analysis_batch(batch_id, status=final_status, items=items, summary=summary, events=events)
+
+
+def _run_single_item(
+    batch_id: str,
+    symbol: str,
+    payload: Dict[str, Any],
+    llm_provider: str,
+    deep_think_llm: str,
+    quick_think_llm: str,
+    store,
+) -> None:
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        return
+    items = list(batch.get("items", []))
+    events = list(batch.get("events", []))
+
+    item = next((it for it in items if it.get("symbol") == symbol), None)
+    if item is None:
+        return
+
+    run = runner.create_run(
+        ticker=symbol,
+        analysis_date=payload.get("analysis_date") or date.today().isoformat(),
+        selected_analysts=payload.get("selected_analysts", []),
+        execution_mode=payload.get("execution_mode", "llm_assisted"),
+        llm_provider=llm_provider,
+        deep_think_llm=deep_think_llm,
+        quick_think_llm=quick_think_llm,
+    )
+    item.update({"run_id": run.run_id, "status": "running", "started_at": _utc_now()})
+    events.append({
+        "type": "batch_item", "batch_id": batch_id,
+        "symbol": symbol, "run_id": run.run_id,
+        "status": "running", "phase": "starting",
+        "timestamp": _utc_now(),
+    })
+    store.update_analysis_batch(batch_id, items=items, events=events)
+
+    try:
+        completed = runner.run_sync(run.run_id)
+        if completed is None:
+            raise RuntimeError("analysis run did not return a result")
+        final_order = completed.final_order_intent or {}
+        item.update({
+            "status": "completed" if completed.status == "completed" else "failed",
+            "completed_at": _utc_now(),
+            "rating": final_order.get("rating", "HOLD"),
+            "summary": completed.report_sections.get("final_trade_decision") or final_order.get("reason") or "",
+            "report_paths": completed.report_paths,
+            "order_intent": final_order,
+            "error": "; ".join(completed.errors) if completed.errors else None,
+        })
+    except Exception as exc:
+        item.update({"status": "failed", "completed_at": _utc_now(), "error": str(exc), "rating": "HOLD", "summary": str(exc)})
+
+    events.append({
+        "type": "batch_item", "batch_id": batch_id,
+        "symbol": symbol, "run_id": item.get("run_id"),
+        "status": item["status"],
+        "rating": item.get("rating"),
+        "error": item.get("error"),
+        "timestamp": _utc_now(),
+    })
+    store.update_analysis_batch(batch_id, items=items, summary={"counts": _batch_counts(items)}, events=events)
+
+
+def retry_batch_item_analysis(batch_id: str, symbol: str, store, settings: Dict[str, Any]) -> None:
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        return
+    llm_provider = settings.get("llm_provider", "")
+    deep_think_llm = settings.get("deep_think_llm", "")
+    quick_think_llm = settings.get("quick_think_llm", "")
+    payload = {
+        "analysis_date": batch.get("analysis_date") or date.today().isoformat(),
+        "selected_analysts": batch.get("selected_analysts", []),
+        "execution_mode": batch.get("execution_mode", "llm_assisted"),
+    }
+    t = _thread_cls(
+        target=_run_single_item,
+        args=(batch_id, symbol, payload, llm_provider, deep_think_llm, quick_think_llm, store),
+        daemon=True,
+    )
+    t.start()
 
 
 def _compute_atr_from_intraday(bars_15m: pd.DataFrame, period: int = 14) -> float:
