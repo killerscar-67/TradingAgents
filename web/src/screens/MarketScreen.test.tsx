@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { WorkflowProvider } from "../contexts/WorkflowContext";
 import { MarketScreen } from "./MarketScreen";
 
@@ -27,7 +28,16 @@ function stubFetch(response = contractReadyOverview) {
       return { ok: true, json: async () => response };
     }
     if (path.startsWith("/api/market/chart")) {
-      return { ok: true, json: async () => ({ points: [{ time: 1, value: 500 }, { time: 2, value: 505 }] }) };
+      return {
+        ok: true,
+        json: async () => ({
+          points: [{ time: 1, value: 500 }, { time: 2, value: 505 }],
+          bars: [
+            { time: 1, open: 495, high: 502, low: 492, close: 500 },
+            { time: 2, open: 500, high: 507, low: 498, close: 505 },
+          ],
+        }),
+      };
     }
     if (path === "/api/market/sectors") {
       return {
@@ -124,6 +134,13 @@ describe("MarketScreen", () => {
   it("connects live market websocket to the backend origin during Vite dev", async () => {
     const instances: Array<{ url: string }> = [];
     stubFetch();
+    vi.stubGlobal("location", {
+      port: "5173",
+      protocol: "http:",
+      hostname: "127.0.0.1",
+      origin: "http://127.0.0.1:5173",
+      href: "http://127.0.0.1:5173/",
+    });
     vi.stubGlobal("WebSocket", class {
       url: string;
       onopen: (() => void) | null = null;
@@ -145,8 +162,27 @@ describe("MarketScreen", () => {
     renderScreen();
     await waitFor(() => expect(screen.getByText("XLK")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "1D" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Candles" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Line" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText("XLE")).toBeInTheDocument();
     expect(screen.getByText("CPI")).toBeInTheDocument();
     expect(screen.queryByText("Minor data")).not.toBeInTheDocument();
+  });
+
+  it("lets the user toggle between candle and line charts", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+    renderScreen();
+
+    const candlesButton = await screen.findByRole("button", { name: "Candles" });
+    const lineButton = screen.getByRole("button", { name: "Line" });
+
+    expect(candlesButton).toHaveAttribute("aria-pressed", "true");
+    expect(lineButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(lineButton);
+
+    expect(candlesButton).toHaveAttribute("aria-pressed", "false");
+    expect(lineButton).toHaveAttribute("aria-pressed", "true");
   });
 });

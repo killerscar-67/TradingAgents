@@ -19,6 +19,7 @@ from tradingagents.web import runner
 from tradingagents.web.storage import get_workflow_store
 from tradingagents.web.workflow_service import (
     build_strategy_from_batch,
+    get_market_chart as build_market_chart,
     get_market_overview as build_market_overview,
     resolve_basket_items,
     run_backtest_for_strategy,
@@ -185,6 +186,11 @@ class WorkflowSessionUpdateRequest(BaseModel):
 def get_market_overview(home_market: str = "US", trade_date: Optional[str] = None) -> Dict[str, Any]:
     settings = get_workflow_store().get_settings_without_status()
     return build_market_overview(home_market, trade_date, settings)
+
+
+@router.get("/api/market/chart")
+def get_market_chart(symbol: str = Query(...), period: str = "1M", trade_date: Optional[str] = None) -> Dict[str, Any]:
+    return build_market_chart(symbol, period, trade_date)
 
 
 @router.websocket("/api/market/live")

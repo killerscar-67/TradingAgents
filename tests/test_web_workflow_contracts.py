@@ -224,6 +224,21 @@ class WorkflowContractTests(unittest.TestCase):
         mock_download.assert_called_once()
         self.assertEqual(mock_download.call_args.args[0], "AAPL")
 
+    def test_market_chart_route_returns_candles_and_line_points(self):
+        with patch("tradingagents.web.workflow_service._download_daily_history", return_value={"SPY": _make_daily_history()}):
+            resp = self.client.get("/api/market/chart?symbol=SPY&period=1M&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["symbol"], "SPY")
+        self.assertEqual(body["period"], "1M")
+        self.assertGreater(len(body["points"]), 10)
+        self.assertGreater(len(body["bars"]), 10)
+        self.assertIn("time", body["points"][0])
+        self.assertIn("value", body["points"][0])
+        self.assertIn("open", body["bars"][0])
+        self.assertIn("close", body["bars"][0])
+
     def test_market_live_websocket_streams_multiple_snapshots(self):
         payload = _screening_regime("US")
         with patch("tradingagents.web.routes.workflow.build_market_overview", return_value=payload):

@@ -84,6 +84,13 @@ UNIVERSE_ALIASES = {
 }
 
 YFINANCE_UNAVAILABLE_SYMBOLS = {"^VHSI"}
+CHART_PERIOD_LOOKBACK_DAYS = {
+    "1D": 7,
+    "1W": 14,
+    "1M": 45,
+    "3M": 120,
+    "1Y": 400,
+}
 
 
 def _utc_now() -> str:
@@ -538,6 +545,60 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
             "transport": "websocket",
             "provider": settings.get("data_vendors", {}).get("market", "yfinance"),
         },
+    }
+
+
+def get_market_chart(symbol: str, period: str = "1M", trade_date: Optional[str] = None) -> Dict[str, Any]:
+    normalized_symbol = (symbol or "").strip().upper()
+    normalized_period = (period or "1M").strip().upper()
+
+    if not normalized_symbol:
+        return {"symbol": "", "period": normalized_period, "points": [], "bars": []}
+
+    as_of_date = trade_date or date.today().isoformat()
+    lookback_days = CHART_PERIOD_LOOKBACK_DAYS.get(normalized_period, CHART_PERIOD_LOOKBACK_DAYS["1M"])
+    start = (datetime.fromisoformat(as_of_date) - timedelta(days=lookback_days)).date().isoformat()
+    end = (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat()
+    history = _download_daily_history([normalized_symbol], start, end).get(normalized_symbol, pd.DataFrame())
+
+    close_series = _history_series(history, "Close")
+    points: List[Dict[str, Any]] = []
+    for timestamp, value in close_series.items():
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        points.append({"time": int(ts.timestamp()), "value": round(float(value), 4)})
+
+    ohlc = pd.concat(
+        [
+            _history_series(history, "Open").rename("open"),
+            _history_series(history, "High").rename("high"),
+            _history_series(history, "Low").rename("low"),
+            _history_series(history, "Close").rename("close"),
+        ],
+        axis=1,
+    ).dropna(subset=["open", "high", "low", "close"])
+
+    bars: List[Dict[str, Any]] = []
+    for timestamp, row in ohlc.iterrows():
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        bars.append(
+            {
+                "time": int(ts.timestamp()),
+                "open": round(float(row["open"]), 4),
+                "high": round(float(row["high"]), 4),
+                "low": round(float(row["low"]), 4),
+                "close": round(float(row["close"]), 4),
+            }
+        )
+
+    return {
+        "symbol": normalized_symbol,
+        "period": normalized_period,
+        "points": points,
+        "bars": bars,
     }
 
 

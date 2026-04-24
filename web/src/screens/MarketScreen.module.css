@@ -58,6 +58,13 @@
   gap: 12px;
 }
 
+.sectionHeader {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
 .sectionTitle {
   font-size: 13px;
   font-weight: 600;
@@ -65,6 +72,28 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin: 0;
+}
+
+.chartModeGroup {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.chartModeBtn {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 999px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+
+.chartModeBtnActive {
+  background: #1d4ed8;
+  border-color: #2563eb;
+  color: #eff6ff;
 }
 
 .regimeCard {

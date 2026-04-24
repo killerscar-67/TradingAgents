@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useWorkflow } from "../contexts/WorkflowContext";
 import { useMarketOverview } from "../hooks/useMarketOverview";
-import { TradingChart, type LinePoint } from "../components/TradingChart";
+import { TradingChart, type LinePoint, type OhlcBar } from "../components/TradingChart";
 import styles from "./MarketScreen.module.css";
 
 interface SectorChange {
@@ -35,7 +35,9 @@ export function MarketScreen() {
   const { setRegime, autoAdvance, setScreen } = useWorkflow();
   const { overview, loading, error, live } = useMarketOverview();
   const [chartTf, setChartTf] = useState("1D");
+  const [chartMode, setChartMode] = useState<"candlestick" | "line">("candlestick");
   const [indexChart, setIndexChart] = useState<LinePoint[]>([]);
+  const [indexBars, setIndexBars] = useState<OhlcBar[]>([]);
   const [sectors, setSectors] = useState<SectorChange[]>([]);
   const [calendar, setCalendar] = useState<CalendarEvent[]>([]);
 
@@ -51,12 +53,16 @@ export function MarketScreen() {
   useEffect(() => {
     if (!overview?.regime) return;
     let cancelled = false;
-    const homeIndex = homeIndexForMarket(overview.regime.home_market);
+    const overviewHomeMarket = (overview as { home_market?: string } | null)?.home_market ?? overview.regime.home_market;
+    const tradeDate = (overview as { trade_date?: string } | null)?.trade_date;
+    const homeIndex = homeIndexForMarket(overviewHomeMarket);
 
     const fetchMarketPanels = async () => {
       try {
         const [chartResp, sectorsResp, calendarResp] = await Promise.all([
-          fetch(`/api/market/chart?symbol=${encodeURIComponent(homeIndex)}&period=${chartTf}`),
+          fetch(
+            `/api/market/chart?symbol=${encodeURIComponent(homeIndex)}&period=${chartTf}${tradeDate ? `&trade_date=${encodeURIComponent(tradeDate)}` : ""}`
+          ),
           fetch("/api/market/sectors"),
           fetch("/api/market/calendar?days=7"),
         ]);
@@ -67,7 +73,9 @@ export function MarketScreen() {
         ]);
         if (cancelled) return;
         const points = Array.isArray(chartData) ? chartData : chartData.points ?? [];
+        const bars = Array.isArray(chartData) ? [] : chartData.bars ?? [];
         setIndexChart(points);
+        setIndexBars(bars);
         setSectors(sectorsData.sectors ?? []);
         setCalendar(
           (calendarData.events ?? []).filter((event: CalendarEvent) =>
@@ -77,6 +85,7 @@ export function MarketScreen() {
       } catch {
         if (!cancelled) {
           setIndexChart([]);
+          setIndexBars([]);
           setSectors([]);
           setCalendar([]);
         }
@@ -147,9 +156,30 @@ export function MarketScreen() {
           </section>
 
           <section className={styles.section}>
-            <h2 className={styles.sectionTitle}>{homeIndexForMarket(overview.regime.home_market)} trend</h2>
+            <div className={styles.sectionHeader}>
+              <h2 className={styles.sectionTitle}>{homeIndexForMarket(((overview as { home_market?: string } | null)?.home_market ?? overview.regime.home_market))} trend</h2>
+              <div className={styles.chartModeGroup} aria-label="Chart type">
+                <button
+                  type="button"
+                  aria-pressed={chartMode === "candlestick"}
+                  className={`${styles.chartModeBtn} ${chartMode === "candlestick" ? styles.chartModeBtnActive : ""}`}
+                  onClick={() => setChartMode("candlestick")}
+                >
+                  Candles
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={chartMode === "line"}
+                  className={`${styles.chartModeBtn} ${chartMode === "line" ? styles.chartModeBtnActive : ""}`}
+                  onClick={() => setChartMode("line")}
+                >
+                  Line
+                </button>
+              </div>
+            </div>
             <TradingChart
-              mode="line"
+              mode={chartMode}
+              bars={indexBars}
               lineData={indexChart}
               timeframe={chartTf}
               onTimeframeChange={setChartTf}
