@@ -181,6 +181,10 @@ export interface BacktestKpi {
   max_drawdown_pct: number;
   win_rate_pct: number;
   num_trades: number;
+  cagr_pct?: number;
+  sortino?: number;
+  profit_factor?: number;
+  avg_hold_bars?: number;
 }
 
 export interface TradeLogEntry {
@@ -191,6 +195,7 @@ export interface TradeLogEntry {
   exit: number | null;
   pnl_pct: number | null;
   status: string;
+  bars?: number;
 }
 
 export interface BacktestRun {
@@ -214,6 +219,13 @@ export interface AppSettings {
   max_debate_rounds: number;
   max_risk_discuss_rounds: number;
   output_language: string;
+  top_n?: number;
+  score_floor?: number;
+  risk_per_trade_pct?: number;
+  portfolio_size?: number;
+  allow_shorts?: boolean;
+  futu_host?: string;
+  futu_port?: number;
   status: string;
 }
 

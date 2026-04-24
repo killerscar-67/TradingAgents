@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiUrl } from "../apiBase";
 import type { SseEvent } from "../types";
 
 export function useSSE(runId: string | null) {
@@ -9,7 +10,7 @@ export function useSSE(runId: string | null) {
   useEffect(() => {
     if (!runId) return;
 
-    const es = new EventSource(`/api/analysis/${runId}/events`);
+    const es = new EventSource(apiUrl(`/api/analysis/${runId}/events`));
     esRef.current = es;
 
     es.onopen = () => {

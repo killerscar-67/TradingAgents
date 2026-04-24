@@ -32,7 +32,7 @@ fi
 PHASE="$1"
 REVIEW_INPUT="$2"
 TITLE="${3:-Post-review fixes}"
-[[ "$PHASE" =~ ^[0-6]$ ]] || die "Phase must be integer 0..6"
+[[ "$PHASE" =~ ^([0-9]|1[0-3])$ ]] || die "Phase must be integer 0..13"
 
 HANDOFF="$ROOT_DIR/docs/handoffs/phase-${PHASE}.md"
 [[ -f "$HANDOFF" ]] || die "Missing handoff file: $HANDOFF"

@@ -162,6 +162,59 @@
   color: #64748b;
 }
 
+.sectorGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+.sectorTile {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+}
+
+.sectorTile span {
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sectorTile strong {
+  font-size: 13px;
+}
+
+.calendarList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calendarEvent {
+  align-items: center;
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  color: #cbd5e1;
+  display: grid;
+  font-size: 13px;
+  gap: 12px;
+  grid-template-columns: 110px 1fr auto;
+  padding: 10px 12px;
+}
+
+.impactBadge {
+  background: #422006;
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
 .empty {
   padding-top: 80px;
   text-align: center;

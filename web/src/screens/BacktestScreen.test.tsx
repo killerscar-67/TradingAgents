@@ -4,8 +4,12 @@ import { WorkflowProvider, useWorkflow } from "../contexts/WorkflowContext";
 import { BacktestScreen } from "./BacktestScreen";
 import type { TradePlan } from "../types";
 
+const chartMock = vi.hoisted(() =>
+  vi.fn((_props: Record<string, unknown>) => <div data-testid="trading-chart" />)
+);
+
 vi.mock("../components/TradingChart", () => ({
-  TradingChart: () => <div data-testid="trading-chart" />,
+  TradingChart: chartMock,
 }));
 
 const mockPlan: TradePlan = {
@@ -109,7 +113,10 @@ function renderScreen() {
 }
 
 describe("BacktestScreen", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    chartMock.mockClear();
+  });
 
   it("shows empty state when no strategy", () => {
     render(
@@ -152,6 +159,90 @@ describe("BacktestScreen", () => {
     );
     expect(screen.getByText("12.5%")).toBeInTheDocument();
     expect(screen.getByText("1.23")).toBeInTheDocument();
+  });
+
+  it("uses a line chart for equity curve data", async () => {
+    stubFetch();
+    renderScreen();
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /set strategy/i })); });
+    fireEvent.click(screen.getByRole("button", { name: /run backtest/i }));
+    await waitFor(() => expect(chartMock).toHaveBeenCalled());
+    const chartCalls = chartMock.mock.calls;
+    const lastProps = chartCalls[chartCalls.length - 1][0];
+    expect(lastProps).toMatchObject({
+      mode: "line",
+      lineData: [
+        { time: 0, value: 100000 },
+        { time: 1, value: 101500 },
+        { time: 2, value: 112500 },
+      ],
+    });
+    expect(lastProps.bars).toBeUndefined();
+  });
+
+  it("renders extended KPIs and trade log rows", async () => {
+    stubFetch({
+      postResponse: {
+        backtest_id: "bt-001",
+        strategy_id: "strat-001",
+        start_date: "2025-01-01",
+        end_date: "2026-01-01",
+        status: "completed",
+        result: {
+          summary: {
+            total_return_pct: 12.5,
+            trade_count: 2,
+            win_rate: 0.5,
+          },
+          equity_curve: [100000, 101500, 112500],
+          per_symbol: [
+            {
+              symbol: "AAPL",
+              trades: [
+                {
+                  symbol: "AAPL",
+                  direction: "long",
+                  entry_price: 200,
+                  exit_price: 220,
+                  entry_timestamp: "2025-01-02",
+                  exit_timestamp: "2025-01-03",
+                  net_pnl: 10,
+                  exit_reason: "target",
+                  bars: 4,
+                },
+              ],
+            },
+            {
+              symbol: "MSFT",
+              trades: [
+                {
+                  symbol: "MSFT",
+                  direction: "short",
+                  entry_price: 300,
+                  exit_price: 306,
+                  entry_timestamp: "2025-01-04",
+                  exit_timestamp: "2025-01-04",
+                  net_pnl: -2,
+                  exit_reason: "stop",
+                  bars: 2,
+                },
+              ],
+            },
+          ],
+          execution_mode: "quant_strict",
+        },
+      },
+    });
+    renderScreen();
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /set strategy/i })); });
+    fireEvent.click(screen.getByRole("button", { name: /run backtest/i }));
+    await waitFor(() => expect(screen.getByText("Profit factor")).toBeInTheDocument());
+    expect(screen.getByText("CAGR")).toBeInTheDocument();
+    expect(screen.getByText("Sortino")).toBeInTheDocument();
+    expect(screen.getByText("Avg hold")).toBeInTheDocument();
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.getByText("MSFT")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
   });
 
   it("re-fetches persisted backtest details after terminal SSE", async () => {

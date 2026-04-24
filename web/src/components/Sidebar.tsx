@@ -19,9 +19,10 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 export function Sidebar() {
-  const { screen, setScreen } = useWorkflow();
+  const { screen, setScreen, setAutoAdvance } = useWorkflow();
 
   const runFullWorkflow = () => {
+    setAutoAdvance(true);
     setScreen("market");
   };
 
@@ -37,7 +38,7 @@ export function Sidebar() {
           <li key={item.screen}>
             <button
               className={`${styles.navItem} ${screen === item.screen ? styles.navItemActive : ""}`}
-              onClick={() => setScreen(item.screen)}
+              onClick={() => setScreen(item.screen, { userInitiated: true })}
               aria-current={screen === item.screen ? "page" : undefined}
             >
               <span className={styles.navIcon}>{item.icon}</span>

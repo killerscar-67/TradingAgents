@@ -33,6 +33,12 @@ def _make_daily_history(*, start: float = 100.0, step: float = 1.0, periods: int
     )
 
 
+def _make_yfinance_multiindex_history(symbol: str, *, start: float = 100.0, step: float = 1.0, periods: int = 260) -> pd.DataFrame:
+    history = _make_daily_history(start=start, step=step, periods=periods)
+    history.columns = pd.MultiIndex.from_product([history.columns, [symbol]], names=["Price", "Ticker"])
+    return history
+
+
 def _make_intraday_bars(*, start: float = 100.0, step: float = 0.2, periods: int = 160, freq: str = "15min") -> pd.DataFrame:
     idx = pd.date_range("2026-03-01", periods=periods, freq=freq, tz="UTC")
     close = pd.Series([start + (step * i) for i in range(periods)], index=idx, dtype=float)
@@ -188,6 +194,35 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(risk_off.status_code, 200)
         self.assertEqual(risk_off.json()["regime"]["label"], "Risk-off")
         self.assertEqual(risk_off.json()["regime"]["suggested_entry_mode"], "auto")
+
+    def test_market_overview_accepts_yfinance_multiindex_history(self):
+        def mock_multiindex_download(symbols, start, end):
+            histories = {}
+            for symbol in symbols:
+                step = 0.0 if symbol in {"^VIX", "^VHSI"} else 1.0
+                histories[symbol] = _make_yfinance_multiindex_history(symbol, start=100.0, step=step)
+            return histories
+
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=mock_multiindex_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["home_market"], "US")
+        self.assertGreater(body["indices"][0]["price"], 0)
+        self.assertEqual(body["breadth"]["pct_above_50d"], 100.0)
+
+    def test_daily_history_skips_known_unavailable_yahoo_symbols(self):
+        from tradingagents.web.workflow_service import _download_daily_history
+
+        with patch("tradingagents.web.workflow_service.yf.download", return_value=_make_daily_history()) as mock_download:
+            histories = _download_daily_history(["^VHSI", "AAPL"], "2026-01-01", "2026-01-31")
+        self.assertTrue(histories["^VHSI"].empty)
+        self.assertFalse(histories["AAPL"].empty)
+        mock_download.assert_called_once()
+        self.assertEqual(mock_download.call_args.args[0], "AAPL")
 
     def test_market_live_websocket_streams_multiple_snapshots(self):
         payload = _screening_regime("US")
@@ -727,6 +762,50 @@ class WorkflowContractTests(unittest.TestCase):
         ids = {item["id"] for item in jp_group["items"]}
         self.assertIn(screening["run_id"], ids)
         self.assertIn(basket["basket_id"], ids)
+
+    def test_history_tolerates_legacy_runs_with_missing_optional_fields(self):
+        legacy_runs = [
+            SimpleNamespace(
+                run_id="legacy-minimal-1",
+                ticker="IBM",
+                created_at="2026-04-19T12:00:00+00:00",
+            ),
+            SimpleNamespace(
+                run_id="legacy-minimal-2",
+                ticker="ORCL",
+                status="completed",
+                created_at="2026-04-20T12:00:00+00:00",
+                completed_at=None,
+            ),
+        ]
+
+        with patch("tradingagents.web.runner.list_runs", return_value=legacy_runs):
+            resp = self.client.get("/api/history")
+
+        self.assertEqual(resp.status_code, 200)
+        items = [item for item in resp.json()["items"] if item["id"] in {"legacy-minimal-1", "legacy-minimal-2"}]
+        self.assertEqual(len(items), 2)
+        by_id = {item["id"]: item for item in items}
+        self.assertEqual(by_id["legacy-minimal-1"]["status"], "completed")
+        self.assertEqual(by_id["legacy-minimal-1"]["completed_at"], "2026-04-19T12:00:00+00:00")
+
+    def test_history_item_type_filter_is_case_insensitive(self):
+        legacy_runs = [
+            SimpleNamespace(
+                run_id="legacy-upper",
+                ticker="AAPL",
+                status="completed",
+                created_at="2026-04-21T12:00:00+00:00",
+                completed_at="2026-04-21T12:10:00+00:00",
+            )
+        ]
+
+        with patch("tradingagents.web.runner.list_runs", return_value=legacy_runs):
+            resp = self.client.get("/api/history", params={"item_type": "LEGACY_ANALYSIS"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["total"], 1)
+        self.assertEqual(resp.json()["items"][0]["id"], "legacy-upper")
 
 
 class WorkflowStorageTests(unittest.TestCase):

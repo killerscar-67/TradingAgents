@@ -27,3 +27,24 @@ if (!globalThis.matchMedia) {
     }),
   });
 }
+
+if (globalThis.HTMLCanvasElement) {
+  const canvasContext = new Proxy({
+    canvas: {},
+    measureText: (text: string) => ({ width: text.length * 6 }),
+    createLinearGradient: () => ({ addColorStop: () => {} }),
+  }, {
+    get(target, prop) {
+      if (prop in target) return target[prop as keyof typeof target];
+      return () => {};
+    },
+    set() {
+      return true;
+    },
+  });
+
+  Object.defineProperty(globalThis.HTMLCanvasElement.prototype, "getContext", {
+    configurable: true,
+    value: () => canvasContext,
+  });
+}

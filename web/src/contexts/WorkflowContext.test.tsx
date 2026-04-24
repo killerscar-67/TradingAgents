@@ -64,4 +64,30 @@ describe("WorkflowContext", () => {
     act(() => { fireEvent.click(screen.getByRole("button", { name: /go settings/i })); });
     expect(screen.getByTestId("screen")).toHaveTextContent("settings");
   });
+
+  it("tracks auto-advance and disables it on user-initiated navigation", () => {
+    function AutoAdvanceDisplay() {
+      const { autoAdvance, setAutoAdvance, setScreen } = useWorkflow();
+      return (
+        <>
+          <div data-testid="auto">{String(autoAdvance)}</div>
+          <button onClick={() => setAutoAdvance(true)}>Enable auto</button>
+          <button onClick={() => setScreen("settings", { userInitiated: true })}>Manual settings</button>
+          <button onClick={() => setScreen("batch")}>Program batch</button>
+        </>
+      );
+    }
+    render(
+      <WorkflowProvider>
+        <AutoAdvanceDisplay />
+      </WorkflowProvider>
+    );
+    expect(screen.getByTestId("auto")).toHaveTextContent("false");
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /enable auto/i })); });
+    expect(screen.getByTestId("auto")).toHaveTextContent("true");
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /program batch/i })); });
+    expect(screen.getByTestId("auto")).toHaveTextContent("true");
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /manual settings/i })); });
+    expect(screen.getByTestId("auto")).toHaveTextContent("false");
+  });
 });

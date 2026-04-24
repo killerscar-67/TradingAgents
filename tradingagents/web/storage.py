@@ -80,7 +80,17 @@ def _normalize_screen_name(screen_name: str) -> str:
 def _json_loads(payload: Optional[str], *, fallback: Any) -> Any:
     if not payload:
         return fallback
-    return json.loads(payload)
+    try:
+        return json.loads(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
+def _history_sort_value(item: Dict[str, Any]) -> str:
+    value = item.get("completed_at") or item.get("created_at") or ""
+    if not isinstance(value, str):
+        return ""
+    return value
 
 
 def _existing_user_tables(conn: sqlite3.Connection) -> set[str]:
@@ -1070,7 +1080,7 @@ class WorkflowStore:
             items.extend(self._fetch_stage_history(conn))
         return sorted(
             items,
-            key=lambda item: item.get("completed_at") or item.get("created_at") or "",
+            key=_history_sort_value,
             reverse=True,
         )
 
@@ -1281,11 +1291,14 @@ class WorkflowStore:
         )
 
     def _session_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        current_screen = row["current_screen"] if isinstance(row["current_screen"], str) else "market"
+        status = row["status"] if isinstance(row["status"], str) else "draft"
+        home_market = row["home_market"] if isinstance(row["home_market"], str) else "US"
         return {
             "session_id": row["session_id"],
-            "current_screen": row["current_screen"],
-            "home_market": row["home_market"],
-            "status": row["status"],
+            "current_screen": current_screen,
+            "home_market": home_market,
+            "status": status,
             "settings_snapshot": _json_loads(row["settings_snapshot_json"], fallback={}),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

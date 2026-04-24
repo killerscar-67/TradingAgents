@@ -95,6 +95,60 @@
   width: 100%;
 }
 
+.portfolioInputs {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.inputRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.inputRow label {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.inputRow input,
+.notesInput {
+  background: #1e2433;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: #f1f5f9;
+  font-size: 13px;
+  padding: 7px 9px;
+}
+
+.inputRow span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.actionBtns {
+  display: flex;
+  gap: 8px;
+}
+
+.actionBtns button {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 7px 12px;
+}
+
+.notesInput {
+  min-width: 150px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

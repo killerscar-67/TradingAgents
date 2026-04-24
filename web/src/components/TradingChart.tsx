@@ -23,27 +23,43 @@ export interface ChartMarker {
   text?: string;
 }
 
+export interface LinePoint {
+  time: number;
+  value: number;
+}
+
 interface Props {
   bars?: OhlcBar[];
+  mode?: "candlestick" | "line";
+  lineData?: LinePoint[];
   priceLines?: PriceLine[];
   markers?: ChartMarker[];
   height?: number;
   loading?: boolean;
+  timeframe?: string;
+  onTimeframeChange?: (tf: string) => void;
 }
+
+const TIMEFRAMES = ["1D", "1W", "1M", "3M", "1Y"];
 
 export function TradingChart({
   bars,
+  mode = "candlestick",
+  lineData,
   priceLines,
   markers,
   height = 300,
   loading = false,
+  timeframe = "1D",
+  onTimeframeChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null);
+  const hasData = mode === "line" ? !!lineData?.length : !!bars?.length;
 
   useEffect(() => {
-    if (!containerRef.current || !bars || bars.length === 0) return;
+    if (!containerRef.current || !hasData) return;
 
     let chart: ReturnType<typeof import("lightweight-charts")["createChart"]> | undefined;
 
@@ -70,25 +86,39 @@ export function TradingChart({
       });
       chartRef.current = chart;
 
-      const series = chart.addCandlestickSeries({
-        upColor: "#4ade80",
-        downColor: "#f87171",
-        borderUpColor: "#4ade80",
-        borderDownColor: "#f87171",
-        wickUpColor: "#4ade80",
-        wickDownColor: "#f87171",
-      });
+      const series = mode === "line"
+        ? chart.addLineSeries({
+            color: "#60a5fa",
+            lineWidth: 2,
+          })
+        : chart.addCandlestickSeries({
+            upColor: "#4ade80",
+            downColor: "#f87171",
+            borderUpColor: "#4ade80",
+            borderDownColor: "#f87171",
+            wickUpColor: "#4ade80",
+            wickDownColor: "#f87171",
+          });
 
-      // lightweight-charts expects time as UTCTimestamp (seconds) or string
-      series.setData(
-        bars.map((b) => ({
-          time: b.time as unknown as import("lightweight-charts").UTCTimestamp,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
-        }))
-      );
+      if (mode === "line") {
+        series.setData(
+          (lineData ?? []).map((pt) => ({
+            time: pt.time as unknown as import("lightweight-charts").UTCTimestamp,
+            value: pt.value,
+          }))
+        );
+      } else {
+        // lightweight-charts expects time as UTCTimestamp (seconds) or string
+        series.setData(
+          (bars ?? []).map((b) => ({
+            time: b.time as unknown as import("lightweight-charts").UTCTimestamp,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+          }))
+        );
+      }
 
       if (priceLines) {
         for (const pl of priceLines) {
@@ -121,23 +151,49 @@ export function TradingChart({
       chart?.remove();
       chartRef.current = null;
     };
-  }, [bars, priceLines, markers, height]);
+  }, [bars, lineData, mode, priceLines, markers, height, hasData]);
+
+  const controls = onTimeframeChange ? (
+    <div className={styles.controls} aria-label="Chart timeframe">
+      {TIMEFRAMES.map((tf) => (
+        <button
+          key={tf}
+          type="button"
+          className={`${styles.tfBtn} ${timeframe === tf ? styles.tfBtnActive : ""}`}
+          onClick={() => onTimeframeChange(tf)}
+        >
+          {tf}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   if (loading) {
     return (
-      <div className={styles.placeholder} style={{ height }}>
-        <span className={styles.placeholderText}>Loading chart…</span>
-      </div>
+      <>
+        {controls}
+        <div className={styles.placeholder} style={{ height }}>
+          <span className={styles.placeholderText}>Loading chart...</span>
+        </div>
+      </>
     );
   }
 
-  if (!bars || bars.length === 0) {
+  if (!hasData) {
     return (
-      <div className={styles.placeholder} style={{ height }}>
-        <span className={styles.placeholderText}>Chart will load when data is available</span>
-      </div>
+      <>
+        {controls}
+        <div className={styles.placeholder} style={{ height }}>
+          <span className={styles.placeholderText}>Chart will load when data is available</span>
+        </div>
+      </>
     );
   }
 
-  return <div ref={containerRef} className={styles.chart} style={{ height }} />;
+  return (
+    <>
+      {controls}
+      <div ref={containerRef} className={styles.chart} style={{ height }} />
+    </>
+  );
 }

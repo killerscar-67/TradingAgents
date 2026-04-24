@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl } from "../apiBase";
 
 export interface BacktestEvent {
   type: string;
@@ -29,7 +30,7 @@ export function useBacktestEvents(backtestId: string | null) {
     setEvents([]);
     setDone(false);
 
-    const es = new EventSource(`/api/backtests/${backtestId}/events`);
+    const es = new EventSource(apiUrl(`/api/backtests/${backtestId}/events`));
 
     es.onopen = () => setConnected(true);
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiUrl } from "../apiBase";
 
 export interface BatchEvent {
   type: string;
@@ -8,6 +9,7 @@ export interface BatchEvent {
   status?: string;
   rating?: string;
   error?: string;
+  phase?: string;
   counts?: Record<string, number>;
   sequence?: number;
   timestamp: number;
@@ -29,7 +31,7 @@ export function useBatchEvents(batchId: string | null) {
     setEvents([]);
     setDone(false);
 
-    const es = new EventSource(`/api/batches/${batchId}/events`);
+    const es = new EventSource(apiUrl(`/api/batches/${batchId}/events`));
 
     es.onopen = () => setConnected(true);
 

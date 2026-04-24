@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { HistoryScreen } from "./HistoryScreen";
+import { WorkflowProvider } from "../contexts/WorkflowContext";
 
 function stubFetch() {
   const mock = vi.fn(async (url: string) => {
@@ -19,6 +20,17 @@ function stubFetch() {
               home_market: "US",
               workflow_session_id: "session-001",
               summary: "4 trades · gross 42%",
+            },
+            {
+              id: "legacy-001",
+              type: "legacy_analysis",
+              title: "AAPL analysis",
+              status: "completed",
+              created_at: "2026-01-02T00:00:00Z",
+              completed_at: "2026-01-02T00:15:00Z",
+              home_market: "US",
+              workflow_session_id: null,
+              summary: "BUY",
             },
           ],
         }),
@@ -40,5 +52,24 @@ describe("HistoryScreen", () => {
     expect(screen.getByText("strategy plan")).toBeInTheDocument();
     expect(screen.getByText("4 trades · gross 42%")).toBeInTheDocument();
     expect(screen.getByText("ready")).toBeInTheDocument();
+  });
+
+  it("filters history by search, type, and status and renders secondary actions", async () => {
+    stubFetch();
+    render(
+      <WorkflowProvider>
+        <HistoryScreen />
+      </WorkflowProvider>
+    );
+    await waitFor(() => expect(screen.getByText("Breakout v2")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/search history/i), { target: { value: "aapl" } });
+    expect(screen.queryByText("Breakout v2")).not.toBeInTheDocument();
+    expect(screen.getByText("AAPL analysis")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/type filter/i), { target: { value: "strategy_plan" } });
+    expect(screen.queryByText("AAPL analysis")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/search history/i), { target: { value: "" } });
+    expect(screen.getByText("Breakout v2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /re-run breakout v2/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /export breakout v2/i })).toBeInTheDocument();
   });
 });

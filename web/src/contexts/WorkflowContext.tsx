@@ -12,10 +12,12 @@ interface WorkflowState {
   strategyId: string | null;
   tradePlan: TradePlan | null;
   backtestId: string | null;
+  autoAdvance: boolean;
 }
 
 type Action =
-  | { type: "SET_SCREEN"; screen: Screen }
+  | { type: "SET_SCREEN"; screen: Screen; userInitiated?: boolean }
+  | { type: "SET_AUTO_ADVANCE"; value: boolean }
   | { type: "SET_REGIME"; regime: RegimeData }
   | { type: "SET_BASKET"; basket: BasketData }
   | { type: "SET_BATCH_ID"; id: string }
@@ -34,12 +36,19 @@ const initialState: WorkflowState = {
   strategyId: null,
   tradePlan: null,
   backtestId: null,
+  autoAdvance: false,
 };
 
 function reducer(state: WorkflowState, action: Action): WorkflowState {
   switch (action.type) {
     case "SET_SCREEN":
-      return { ...state, screen: action.screen };
+      return {
+        ...state,
+        screen: action.screen,
+        autoAdvance: action.userInitiated ? false : state.autoAdvance,
+      };
+    case "SET_AUTO_ADVANCE":
+      return { ...state, autoAdvance: action.value };
     case "SET_REGIME":
       return { ...state, regime: action.regime };
     case "SET_BASKET":
@@ -61,7 +70,8 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
 }
 
 interface WorkflowContextValue extends WorkflowState {
-  setScreen: (s: Screen) => void;
+  setScreen: (s: Screen, options?: { userInitiated?: boolean }) => void;
+  setAutoAdvance: (v: boolean) => void;
   setRegime: (r: RegimeData) => void;
   setBasket: (b: BasketData) => void;
   setBatchId: (id: string) => void;
@@ -75,8 +85,12 @@ const WorkflowContext = createContext<WorkflowContextValue | null>(null);
 export function WorkflowProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
-  const setScreen = useCallback((screen: Screen) => {
-    dispatch({ type: "SET_SCREEN", screen });
+  const setScreen = useCallback((screen: Screen, options?: { userInitiated?: boolean }) => {
+    dispatch({ type: "SET_SCREEN", screen, userInitiated: options?.userInitiated });
+  }, []);
+
+  const setAutoAdvance = useCallback((value: boolean) => {
+    dispatch({ type: "SET_AUTO_ADVANCE", value });
   }, []);
 
   const setRegime = useCallback((regime: RegimeData) => {
@@ -106,6 +120,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   const value: WorkflowContextValue = {
     ...state,
     setScreen,
+    setAutoAdvance,
     setRegime,
     setBasket,
     setBatchId,

@@ -20,6 +20,26 @@
   gap: 24px;
 }
 
+.filterBar {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.searchInput,
+.filterSelect {
+  background: #1e2433;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #f1f5f9;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.searchInput {
+  min-width: 260px;
+}
+
 .group {
   display: flex;
   flex-direction: column;
@@ -104,6 +124,28 @@
 .runStatus_error {
   background: #450a0a;
   color: #f87171;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.runRow:hover .actions {
+  opacity: 1;
+}
+
+.actions button {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
 }
 
 .empty {

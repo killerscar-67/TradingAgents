@@ -1,3 +1,30 @@
+.controls {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tfBtn {
+  background: #1e2433;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.tfBtn:hover {
+  border-color: #475569;
+  color: #e2e8f0;
+}
+
+.tfBtnActive {
+  background: #172554;
+  border-color: #2563eb;
+  color: #bfdbfe;
+}
+
 .chart {
   width: 100%;
   border-radius: 6px;

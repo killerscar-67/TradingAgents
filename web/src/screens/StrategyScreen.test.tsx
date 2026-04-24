@@ -133,4 +133,22 @@ describe("StrategyScreen", () => {
       entry_price: 200,
     });
   });
+
+  it("renders R:R, portfolio controls, notes, and copy/export actions", async () => {
+    const writeText = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    stubFetch();
+    renderScreen();
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /set batch/i })); });
+    fireEvent.click(screen.getByRole("button", { name: /generate strategy/i }));
+    await waitFor(() => expect(screen.getByText("AAPL")).toBeInTheDocument());
+    expect(screen.getByText("R:R")).toBeInTheDocument();
+    expect(screen.getByText("2.00")).toBeInTheDocument();
+    expect(screen.getByLabelText(/portfolio size/i)).toHaveValue(100000);
+    expect(screen.getByLabelText(/risk per trade/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/notes for aapl/i), { target: { value: "wait for open" } });
+    fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining("wait for open")));
+    expect(screen.getByRole("button", { name: /export csv/i })).toBeInTheDocument();
+  });
 });

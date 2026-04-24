@@ -130,6 +130,22 @@
   cursor: not-allowed;
 }
 
+.stopBtn {
+  background: #450a0a;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 7px 14px;
+}
+
+.runningArea {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
 .partialFailure {
   background: #422006;
   border: 1px solid #92400e;
@@ -209,8 +225,79 @@
   color: #60a5fa;
 }
 
+.cardPhase {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
 .cardError {
   font-size: 12px;
   color: #f87171;
   margin-top: 4px;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.retryBtn,
+.skipBtn {
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.retryBtn {
+  background: #172554;
+  border: 1px solid #1d4ed8;
+  color: #bfdbfe;
+}
+
+.skipBtn {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+}
+
+.feedLog {
+  background: #0b0f19;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.feedEntry {
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.progressiveCta {
+  align-items: center;
+  align-self: flex-start;
+  background: #052e16;
+  border: 1px solid #047857;
+  border-radius: 8px;
+  color: #bbf7d0;
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.progressiveCta button {
+  background: #047857;
+  border: none;
+  border-radius: 6px;
+  color: #ecfdf5;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 10px;
 }

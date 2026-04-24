@@ -37,6 +37,19 @@ _VALID_SESSION_STATUSES = {"draft", "active", "completed", "archived"}
 _VALID_HISTORY_GROUPS = {"none", "workflow_session"}
 
 
+def _history_item_sort_value(item: Dict[str, Any]) -> str:
+    value = item.get("completed_at") or item.get("created_at") or ""
+    if not isinstance(value, str):
+        return ""
+    return value
+
+
+def _date_prefix(value: Any) -> str:
+    if isinstance(value, str):
+        return value[:10]
+    return ""
+
+
 class ScreeningRunRequest(BaseModel):
     universe: str = "S&P 500"
     strategy: str = "auto"
@@ -432,18 +445,20 @@ def get_history(
     items.extend(
         {
             "type": "legacy_analysis",
-            "id": run.run_id,
-            "title": run.ticker,
-            "status": run.status,
-            "created_at": run.created_at,
-            "completed_at": run.completed_at,
+            "id": getattr(run, "run_id", ""),
+            "title": getattr(run, "ticker", ""),
+            "status": getattr(run, "status", "completed"),
+            "created_at": getattr(run, "created_at", ""),
+            "completed_at": getattr(run, "completed_at", "") or getattr(run, "created_at", ""),
             "home_market": None,
             "workflow_session_id": None,
         }
         for run in runner.list_runs()
+        if getattr(run, "run_id", None)
     )
     if item_type:
-        items = [item for item in items if item.get("type") == item_type]
+        normalized_item_type = item_type.strip().lower()
+        items = [item for item in items if (item.get("type") or "").lower() == normalized_item_type]
     if market:
         market_upper = market.strip().upper()
         items = [item for item in items if (item.get("home_market") or "").upper() == market_upper]
@@ -451,9 +466,9 @@ def get_history(
         normalized_status = status.strip().lower()
         items = [item for item in items if (item.get("status") or "").lower() == normalized_status]
     if start_date:
-        items = [item for item in items if (item.get("created_at") or "")[:10] >= start_date]
+        items = [item for item in items if _date_prefix(item.get("created_at")) >= start_date]
     if end_date:
-        items = [item for item in items if (item.get("created_at") or "")[:10] <= end_date]
+        items = [item for item in items if _date_prefix(item.get("created_at")) <= end_date]
     if q:
         needle = q.strip().lower()
         items = [
@@ -464,7 +479,7 @@ def get_history(
             or needle in (item.get("workflow_session_id") or "").lower()
         ]
     items.sort(
-        key=lambda item: item.get("completed_at") or item.get("created_at") or "",
+        key=_history_item_sort_value,
         reverse=True,
     )
 
@@ -490,10 +505,10 @@ def get_history(
                     "workflow_session_id": None if key == "__ungrouped__" else key,
                     "session": None if key == "__ungrouped__" else session_map.get(key),
                     "items": grouped_items,
-                    "latest_at": grouped_items[0].get("completed_at") or grouped_items[0].get("created_at"),
+                    "latest_at": _history_item_sort_value(grouped_items[0]),
                 }
             )
-        groups.sort(key=lambda group: group["latest_at"] or "", reverse=True)
+        groups.sort(key=lambda group: group.get("latest_at") or "", reverse=True)
         response["groups"] = groups
     return response
 

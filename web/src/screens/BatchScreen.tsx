@@ -3,6 +3,7 @@ import { useWorkflow } from "../contexts/WorkflowContext";
 import { useBatchEvents } from "../hooks/useBatchEvents";
 import { RunDetail } from "../components/RunDetail";
 import { InheritedChip } from "../components/InheritedChip";
+import { Dialog } from "../components/Dialog";
 import type { BatchItem } from "../types";
 import styles from "./BatchScreen.module.css";
 
@@ -22,15 +23,18 @@ function normalizeBatchStatus(status?: string): BatchItem["status"] {
 }
 
 export function BatchScreen() {
-  const { basket, setBatchId, updateBatchResult, batchId, batchResults } = useWorkflow();
+  const { basket, setBatchId, updateBatchResult, batchId, batchResults, setScreen, autoAdvance } = useWorkflow();
   const [symbols, setSymbols] = useState<string[]>(basket?.symbols ?? []);
   const [inputVal, setInputVal] = useState("");
   const [batchStarted, setBatchStarted] = useState(false);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmStopOpen, setConfirmStopOpen] = useState(false);
+  const [latestPhase, setLatestPhase] = useState<Record<string, string>>({});
   const lastProcessedEventIndex = useRef(0);
+  const feedRef = useRef<HTMLDivElement>(null);
 
-  const { events } = useBatchEvents(batchStarted ? batchId : null);
+  const { events, done } = useBatchEvents(batchStarted ? batchId : null);
 
   useEffect(() => {
     if (events.length < lastProcessedEventIndex.current) {
@@ -41,6 +45,9 @@ export function BatchScreen() {
     lastProcessedEventIndex.current = events.length;
 
     for (const event of pendingEvents) {
+      if (event.symbol && event.phase) {
+        setLatestPhase((prev) => ({ ...prev, [event.symbol as string]: event.phase as string }));
+      }
       if (!event.symbol || !event.status) continue;
       updateBatchResult(event.symbol, {
         ticker: event.symbol,
@@ -55,6 +62,18 @@ export function BatchScreen() {
   useEffect(() => {
     lastProcessedEventIndex.current = 0;
   }, [batchId]);
+
+  useEffect(() => {
+    if (feedRef.current) {
+      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    }
+  }, [events]);
+
+  useEffect(() => {
+    if (autoAdvance && done) {
+      setScreen("strategy");
+    }
+  }, [autoAdvance, done, setScreen]);
 
   const addSymbol = () => {
     const s = inputVal.trim().toUpperCase();
@@ -102,12 +121,35 @@ export function BatchScreen() {
     }
   };
 
+  const stopBatch = async () => {
+    if (!batchId) return;
+    await fetch(`/api/batches/${batchId}/stop`, { method: "POST" });
+    setBatchStarted(false);
+    setConfirmStopOpen(false);
+  };
+
+  const retryTicker = async (symbol: string) => {
+    if (!batchId) return;
+    await fetch(`/api/batches/${batchId}/items/${symbol}/retry`, { method: "POST" });
+  };
+
+  const skipTicker = (symbol: string) => {
+    setSymbols((prev) => prev.filter((item) => item !== symbol));
+  };
+
   if (detailRunId) {
     return <RunDetail runId={detailRunId} onBack={() => setDetailRunId(null)} />;
   }
 
   const resultsList = Object.values(batchResults);
   const hasPartialFailure = resultsList.some((r) => r.status === "error");
+  const readyCount = resultsList.filter((r) => r.status === "completed").length;
+  const feedEvents = events.slice(-50);
+
+  const formatEventTime = (timestamp: number) => {
+    const millis = timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
+    return new Date(millis).toLocaleTimeString();
+  };
 
   return (
     <div className={styles.page}>
@@ -117,6 +159,11 @@ export function BatchScreen() {
           <InheritedChip
             label={`${basket.symbols.length} tickers (from Screening)`}
           />
+        )}
+        {batchStarted && !done && (
+          <button className={styles.stopBtn} type="button" onClick={() => setConfirmStopOpen(true)}>
+            Stop all
+          </button>
         )}
       </header>
 
@@ -166,38 +213,99 @@ export function BatchScreen() {
           </button>
         </div>
       ) : (
-        <div className={styles.cards}>
-          {hasPartialFailure && (
-            <div className={styles.partialFailure}>
-              Some tickers failed. Successful results are still available below.
+        <div className={styles.runningArea}>
+          <div className={styles.cards}>
+            {hasPartialFailure && (
+              <div className={styles.partialFailure}>
+                Some tickers failed. Successful results are still available below.
+              </div>
+            )}
+            {symbols.map((sym) => {
+              const item = batchResults[sym];
+              const status = item?.status ?? "queued";
+              return (
+                <div
+                  key={sym}
+                  className={`${styles.card} ${item?.run_id ? styles.cardClickable : ""}`}
+                  onClick={() => item?.run_id && setDetailRunId(item.run_id)}
+                >
+                  <div className={styles.cardHeader}>
+                    <span className={styles.cardTicker}>{sym}</span>
+                    <span className={`${styles.cardStatus} ${styles["cardStatus_" + status]}`}>
+                      {status}
+                    </span>
+                  </div>
+                  {latestPhase[sym] && (
+                    <div className={styles.cardPhase}>Phase: {latestPhase[sym]}</div>
+                  )}
+                  {item?.rating && (
+                    <div className={styles.cardRating}>{item.rating}</div>
+                  )}
+                  {item?.error && (
+                    <div className={styles.cardError}>{item.error}</div>
+                  )}
+                  {status === "error" && (
+                    <div className={styles.cardActions}>
+                      <button
+                        className={styles.retryBtn}
+                        type="button"
+                        aria-label={`Retry ${sym}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void retryTicker(sym);
+                        }}
+                      >
+                        Retry
+                      </button>
+                      <button
+                        className={styles.skipBtn}
+                        type="button"
+                        aria-label={`Skip ${sym}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          skipTicker(sym);
+                        }}
+                      >
+                        Skip
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className={styles.feedLog} ref={feedRef} aria-label="Batch live feed">
+            {feedEvents.length === 0 ? (
+              <div className={styles.feedEntry}>Waiting for batch events...</div>
+            ) : (
+              feedEvents.map((event, index) => (
+                <div className={styles.feedEntry} key={`${event.sequence ?? index}-${event.timestamp}`}>
+                  [{formatEventTime(event.timestamp)}] {event.symbol ?? "BATCH"} - {event.type}:{" "}
+                  {event.status ?? event.rating ?? event.error ?? ""}
+                </div>
+              ))
+            )}
+          </div>
+
+          {readyCount > 0 && (
+            <div className={styles.progressiveCta}>
+              <span>{readyCount} ready</span>
+              <button type="button" onClick={() => setScreen("strategy")}>
+                View strategy ({readyCount} ready)
+              </button>
             </div>
           )}
-          {symbols.map((sym) => {
-            const item = batchResults[sym];
-            const status = item?.status ?? "queued";
-            return (
-              <div
-                key={sym}
-                className={`${styles.card} ${item?.run_id ? styles.cardClickable : ""}`}
-                onClick={() => item?.run_id && setDetailRunId(item.run_id)}
-              >
-                <div className={styles.cardHeader}>
-                  <span className={styles.cardTicker}>{sym}</span>
-                  <span className={`${styles.cardStatus} ${styles["cardStatus_" + status]}`}>
-                    {status}
-                  </span>
-                </div>
-                {item?.rating && (
-                  <div className={styles.cardRating}>{item.rating}</div>
-                )}
-                {item?.error && (
-                  <div className={styles.cardError}>{item.error}</div>
-                )}
-              </div>
-            );
-          })}
         </div>
       )}
+      <Dialog
+        open={confirmStopOpen}
+        title="Stop batch analysis"
+        onConfirm={stopBatch}
+        onCancel={() => setConfirmStopOpen(false)}
+      >
+        Stop all running and queued ticker analyses in this batch?
+      </Dialog>
     </div>
   );
 }

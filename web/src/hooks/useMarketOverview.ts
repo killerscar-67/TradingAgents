@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiUrl, apiWsUrl } from "../apiBase";
 import type { MarketOverview } from "../types";
 
 interface MarketLiveMessage {
@@ -18,7 +19,7 @@ export function useMarketOverview() {
 
     const fetchOverview = async () => {
       try {
-        const resp = await fetch("/api/market/overview");
+        const resp = await fetch(apiUrl("/api/market/overview"));
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data: MarketOverview = await resp.json();
         if (!cancelled) {
@@ -36,8 +37,7 @@ export function useMarketOverview() {
     fetchOverview();
 
     const connectWs = () => {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const ws = new WebSocket(`${proto}://${location.host}/api/market/live`);
+      const ws = new WebSocket(apiWsUrl("/api/market/live"));
       wsRef.current = ws;
 
       ws.onopen = () => { if (!cancelled) setLive(true); };

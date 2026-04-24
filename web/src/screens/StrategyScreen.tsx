@@ -63,12 +63,15 @@ function mapStrategyResponseToTradePlan(data: StrategyResponse): TradePlan {
 }
 
 export function StrategyScreen() {
-  const { batchId, strategyId, tradePlan, setStrategyId, setScreen } = useWorkflow();
+  const { batchId, strategyId, tradePlan, setStrategyId, setScreen, autoAdvance } = useWorkflow();
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [stagingEntry, setStagingEntry] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [portfolioSize, setPortfolioSize] = useState(100_000);
+  const [riskPct, setRiskPct] = useState(1);
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const handleLoadPlan = async () => {
     if (!batchId) return;
@@ -82,7 +85,12 @@ export function StrategyScreen() {
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data: StrategyResponse = await resp.json();
-      setStrategyId(data.strategy_id, mapStrategyResponseToTradePlan(data));
+      const plan = mapStrategyResponseToTradePlan(data);
+      setPortfolioSize(Number(data.request?.portfolio_size ?? 100_000));
+      setStrategyId(data.strategy_id, plan);
+      if (autoAdvance) {
+        setScreen("backtest");
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -125,6 +133,57 @@ export function StrategyScreen() {
       setToast(`Error staging: ${String(e)}`);
       setTimeout(() => setToast(null), 4000);
     }
+  };
+
+  const calculateRr = (entry: TradePlan["entries"][number]): number => {
+    const reward = entry.direction === "LONG"
+      ? entry.target - entry.entry
+      : entry.entry - entry.target;
+    const risk = entry.direction === "LONG"
+      ? entry.entry - entry.stop
+      : entry.stop - entry.entry;
+    if (risk <= 0) return 0;
+    return reward / risk;
+  };
+
+  const displaySizePct = (entry: TradePlan["entries"][number]): number => {
+    const stopDistance = Math.abs(entry.entry - entry.stop);
+    if (portfolioSize <= 0) return 0;
+    return (stopDistance * entry.quantity / portfolioSize) * 100;
+  };
+
+  const csvString = () => {
+    const rows = [
+      "Ticker,Direction,Entry,Stop,Target,Size%,R:R,Rating,Notes",
+      ...(tradePlan?.entries ?? []).map((entry) => [
+        entry.ticker,
+        entry.direction,
+        entry.entry.toFixed(2),
+        entry.stop.toFixed(2),
+        entry.target.toFixed(2),
+        displaySizePct(entry).toFixed(2),
+        calculateRr(entry).toFixed(2),
+        entry.rating,
+        `"${(notes[entry.ticker] ?? "").replace(/"/g, '""')}"`,
+      ].join(",")),
+    ];
+    return rows.join("\n");
+  };
+
+  const copyCsv = async () => {
+    await navigator.clipboard?.writeText(csvString());
+    setToast("Copied strategy CSV.");
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const exportCsv = () => {
+    const blob = new Blob([csvString()], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "strategy-plan.csv";
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   if (!batchId) {
@@ -184,6 +243,36 @@ export function StrategyScreen() {
             <TradingChart height={200} />
           </div>
 
+          <div className={styles.portfolioInputs}>
+            <div className={styles.inputRow}>
+              <label htmlFor="portfolio-size">Portfolio size ($)</label>
+              <input
+                id="portfolio-size"
+                type="number"
+                min={1}
+                value={portfolioSize}
+                onChange={(e) => setPortfolioSize(Number(e.target.value))}
+              />
+            </div>
+            <div className={styles.inputRow}>
+              <label htmlFor="risk-per-trade">Risk per trade (%)</label>
+              <input
+                id="risk-per-trade"
+                type="number"
+                min={0}
+                max={5}
+                step={0.25}
+                value={riskPct}
+                onChange={(e) => setRiskPct(Number(e.target.value))}
+              />
+              <span>Max loss ${((portfolioSize * riskPct) / 100).toFixed(0)}</span>
+            </div>
+            <div className={styles.actionBtns}>
+              <button type="button" onClick={copyCsv}>Copy</button>
+              <button type="button" onClick={exportCsv}>Export CSV</button>
+            </div>
+          </div>
+
           <table className={styles.table}>
             <thead>
               <tr>
@@ -193,7 +282,9 @@ export function StrategyScreen() {
                 <th className={styles.th}>Stop</th>
                 <th className={styles.th}>Target</th>
                 <th className={styles.th}>Size %</th>
+                <th className={styles.th}>R:R</th>
                 <th className={styles.th}>Rating</th>
+                <th className={styles.th}>Notes</th>
                 <th className={styles.th}></th>
               </tr>
             </thead>
@@ -207,8 +298,17 @@ export function StrategyScreen() {
                   <td className={styles.td}>{entry.entry.toFixed(2)}</td>
                   <td className={styles.td}>{entry.stop.toFixed(2)}</td>
                   <td className={styles.td}>{entry.target.toFixed(2)}</td>
-                  <td className={styles.td}>{entry.size_pct.toFixed(1)}%</td>
+                  <td className={styles.td}>{displaySizePct(entry).toFixed(1)}%</td>
+                  <td className={styles.td}>{calculateRr(entry).toFixed(2)}</td>
                   <td className={styles.td}>{entry.rating}</td>
+                  <td className={styles.td}>
+                    <input
+                      className={styles.notesInput}
+                      aria-label={`Notes for ${entry.ticker}`}
+                      value={notes[entry.ticker] ?? ""}
+                      onChange={(e) => setNotes((prev) => ({ ...prev, [entry.ticker]: e.target.value }))}
+                    />
+                  </td>
                   <td className={styles.td}>
                     <button
                       className={styles.futuBtn}

@@ -34,6 +34,12 @@ function stubFetch() {
     if (url === "/api/batches" && init?.method === "POST") {
       return { ok: true, json: async () => batchResponse };
     }
+    if (url === "/api/batches/batch-001/stop" && init?.method === "POST") {
+      return { ok: true, json: async () => ({ status: "stopped" }) };
+    }
+    if (url === "/api/batches/batch-001/items/AMD/retry" && init?.method === "POST") {
+      return { ok: true, json: async () => ({ status: "queued" }) };
+    }
     return { ok: false, json: async () => ({}) };
   });
   vi.stubGlobal("fetch", mock);
@@ -154,5 +160,73 @@ describe("BatchScreen", () => {
     await waitFor(() => expect(screen.getAllByText("completed")).toHaveLength(2));
     expect(screen.getByText("BUY")).toBeInTheDocument();
     expect(screen.getByText("SELL")).toBeInTheDocument();
+  });
+
+  it("shows phase names and a live event feed", async () => {
+    stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "AMD" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    MockEventSource.instances[0].emit({
+      type: "agent_status",
+      batch_id: "batch-001",
+      symbol: "AMD",
+      run_id: "run-amd",
+      status: "running",
+      phase: "Research",
+      timestamp: 1,
+    });
+    await waitFor(() => expect(screen.getByText(/phase: research/i)).toBeInTheDocument());
+    expect(screen.getByText(/amd.*agent_status.*running/i)).toBeInTheDocument();
+  });
+
+  it("confirms Stop all before posting the stop request", async () => {
+    const mock = stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "AMD" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /stop all/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /stop all/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    await waitFor(() =>
+      expect(mock).toHaveBeenCalledWith(
+        "/api/batches/batch-001/stop",
+        expect.objectContaining({ method: "POST" })
+      )
+    );
+  });
+
+  it("offers retry and skip actions for failed tickers", async () => {
+    const mock = stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "AMD" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    MockEventSource.instances[0].emit({
+      type: "batch_item",
+      batch_id: "batch-001",
+      symbol: "AMD",
+      run_id: "run-amd",
+      status: "error",
+      error: "failed",
+      timestamp: 1,
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /retry amd/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /retry amd/i }));
+    await waitFor(() =>
+      expect(mock).toHaveBeenCalledWith(
+        "/api/batches/batch-001/items/AMD/retry",
+        expect.objectContaining({ method: "POST" })
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: /skip amd/i }));
+    expect(screen.queryByText("AMD")).not.toBeInTheDocument();
   });
 });

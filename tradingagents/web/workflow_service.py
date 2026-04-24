@@ -83,6 +83,8 @@ UNIVERSE_ALIASES = {
     "nikkei 225": ("JP", MARKET_DEFINITIONS["JP"]["universe"]),
 }
 
+YFINANCE_UNAVAILABLE_SYMBOLS = {"^VHSI"}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -93,6 +95,32 @@ def _json_safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _history_series(history: pd.DataFrame, field: str) -> pd.Series:
+    """Return a numeric OHLCV field from flat or yfinance multi-index columns."""
+    if history.empty:
+        return pd.Series(dtype=float)
+
+    data: Any
+    if isinstance(history.columns, pd.MultiIndex):
+        data = None
+        for level in range(history.columns.nlevels):
+            if field in history.columns.get_level_values(level):
+                data = history.xs(field, axis=1, level=level)
+                break
+        if data is None:
+            return pd.Series(dtype=float)
+    elif field in history:
+        data = history[field]
+    else:
+        return pd.Series(dtype=float)
+
+    if isinstance(data, pd.DataFrame):
+        if data.empty or data.shape[1] == 0:
+            return pd.Series(dtype=float)
+        data = data.iloc[:, 0]
+    return pd.to_numeric(data, errors="coerce").dropna()
 
 
 def _market_for_symbol(symbol: str, default_market: str = "US") -> str:
@@ -116,16 +144,45 @@ def _resolve_screening_universe(universe: str, custom_symbols: List[str], home_m
 
 
 def _download_daily_history(symbols: Iterable[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
+    ordered_symbols = list(dict.fromkeys(symbols))
     result: Dict[str, pd.DataFrame] = {}
-    for symbol in symbols:
-        history = yf.download(
-            symbol,
-            start=start,
-            end=end,
-            auto_adjust=False,
-            progress=False,
-        )
-        result[symbol] = history if isinstance(history, pd.DataFrame) else pd.DataFrame()
+    active_symbols: List[str] = []
+    for symbol in ordered_symbols:
+        if symbol in YFINANCE_UNAVAILABLE_SYMBOLS:
+            result[symbol] = pd.DataFrame()
+        else:
+            active_symbols.append(symbol)
+
+    if not active_symbols:
+        return result
+
+    downloaded = yf.download(
+        active_symbols[0] if len(active_symbols) == 1 else active_symbols,
+        start=start,
+        end=end,
+        auto_adjust=False,
+        progress=False,
+        group_by="ticker",
+        threads=True,
+        timeout=10,
+    )
+    if not isinstance(downloaded, pd.DataFrame):
+        for symbol in active_symbols:
+            result[symbol] = pd.DataFrame()
+        return result
+
+    if len(active_symbols) == 1:
+        result[active_symbols[0]] = downloaded
+        return result
+
+    for symbol in active_symbols:
+        frame = pd.DataFrame()
+        if isinstance(downloaded.columns, pd.MultiIndex):
+            if symbol in downloaded.columns.get_level_values(0):
+                frame = downloaded.xs(symbol, axis=1, level=0, drop_level=True)
+            elif symbol in downloaded.columns.get_level_values(downloaded.columns.nlevels - 1):
+                frame = downloaded.xs(symbol, axis=1, level=downloaded.columns.nlevels - 1, drop_level=True)
+        result[symbol] = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
     return result
 
 
@@ -145,9 +202,11 @@ def _true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
 def _compute_adx(history: pd.DataFrame, period: int = 14) -> float:
     if history.empty or len(history) < period + 2:
         return 0.0
-    high = history["High"].astype(float)
-    low = history["Low"].astype(float)
-    close = history["Close"].astype(float)
+    high = _history_series(history, "High")
+    low = _history_series(history, "Low")
+    close = _history_series(history, "Close")
+    if len(high) < period + 2 or len(low) < period + 2 or len(close) < period + 2:
+        return 0.0
     plus_dm = high.diff()
     minus_dm = -low.diff()
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
@@ -173,9 +232,9 @@ def _compute_breadth(universe_histories: Dict[str, pd.DataFrame]) -> Dict[str, A
     valid = 0
 
     for history in universe_histories.values():
-        if history.empty or "Close" not in history or len(history) < 40:
+        if history.empty or len(history) < 40:
             continue
-        close = history["Close"].astype(float).dropna()
+        close = _history_series(history, "Close")
         if len(close) < 2:
             continue
         valid += 1
@@ -244,7 +303,15 @@ def _classify_regime(
             "inputs": {},
         }
 
-    close = benchmark_history["Close"].astype(float).dropna()
+    close = _history_series(benchmark_history, "Close")
+    if close.empty:
+        return {
+            "label": "Choppy / range-bound",
+            "confidence": 0,
+            "suggested_entry_mode": "auto",
+            "event_risk_flag": False,
+            "inputs": {},
+        }
     latest = float(close.iloc[-1])
     sma50 = float(close.rolling(50).mean().iloc[-1])
     sma200 = float(close.rolling(200).mean().iloc[-1] if len(close) >= 200 else close.rolling(min(50, len(close))).mean().iloc[-1])
@@ -252,8 +319,8 @@ def _classify_regime(
 
     vix_level = None
     vix_slope = None
-    if volatility_history is not None and not volatility_history.empty and "Close" in volatility_history:
-        vol_close = volatility_history["Close"].astype(float).dropna()
+    if volatility_history is not None and not volatility_history.empty:
+        vol_close = _history_series(volatility_history, "Close")
         if not vol_close.empty:
             vix_level = float(vol_close.iloc[-1])
             if len(vol_close) > 20:
@@ -398,7 +465,7 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
             hyg = credit_histories.get(credit_symbols[0], pd.DataFrame())
             ief = credit_histories.get(credit_symbols[1], pd.DataFrame())
             if not hyg.empty and not ief.empty and len(hyg) > 20 and len(ief) > 20:
-                ratio = hyg["Close"].astype(float).reset_index(drop=True) / ief["Close"].astype(float).reset_index(drop=True)
+                ratio = _history_series(hyg, "Close").reset_index(drop=True) / _history_series(ief, "Close").reset_index(drop=True)
                 if len(ratio) > 20 and float(ratio.iloc[-21]) != 0.0:
                     credit_change_pct = round(((float(ratio.iloc[-1]) / float(ratio.iloc[-21])) - 1.0) * 100.0, 4)
 
@@ -411,10 +478,10 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
         indices: List[Dict[str, Any]] = []
         for tile in definition["tiles"]:
             hist = histories.get(tile["symbol"], pd.DataFrame())
-            if hist.empty or "Close" not in hist:
+            closes = _history_series(hist, "Close")
+            if closes.empty:
                 indices.append({"symbol": tile["symbol"], "label": tile["label"], "price": 0.0, "change_pct": 0.0})
                 continue
-            closes = hist["Close"].astype(float).dropna()
             latest = float(closes.iloc[-1])
             prev = float(closes.iloc[-2]) if len(closes) > 1 else latest
             change_pct = 0.0 if prev == 0.0 else round(((latest / prev) - 1.0) * 100.0, 4)
@@ -424,10 +491,10 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
         sector_histories = _download_daily_history([symbol for symbol, _ in definition["sector_proxies"]], start, end)
         for symbol, label in definition["sector_proxies"]:
             hist = sector_histories.get(symbol, pd.DataFrame())
-            if hist.empty or "Close" not in hist:
+            closes = _history_series(hist, "Close")
+            if closes.empty:
                 sectors.append({"symbol": symbol, "label": label, "change_pct": 0.0})
                 continue
-            closes = hist["Close"].astype(float).dropna()
             latest = float(closes.iloc[-1])
             prev = float(closes.iloc[-2]) if len(closes) > 1 else latest
             change_pct = 0.0 if prev == 0.0 else round(((latest / prev) - 1.0) * 100.0, 4)

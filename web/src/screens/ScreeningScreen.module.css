@@ -48,7 +48,7 @@
   padding: 7px 10px;
   color: #f1f5f9;
   font-size: 14px;
-  width: 120px;
+  width: 140px;
   box-sizing: border-box;
 }
 
@@ -84,6 +84,29 @@
   color: #f87171;
 }
 
+.filterRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.strategyRadios,
+.filterCheckboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.inlineChoice {
+  align-items: center;
+  color: #94a3b8;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
 .resultsArea {
   display: flex;
   flex-direction: column;
@@ -115,6 +138,41 @@
 
 .basketBtn:hover {
   background: #064e38;
+}
+
+.basketBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.resultsLayout {
+  align-items: flex-start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+
+.basketPanel {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  position: sticky;
+  top: 16px;
+}
+
+.basketCount {
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.basketMeta {
+  color: #64748b;
+  font-size: 13px;
 }
 
 .table {

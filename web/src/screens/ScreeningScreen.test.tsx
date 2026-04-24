@@ -66,4 +66,32 @@ describe("ScreeningScreen", () => {
     expect(screen.queryByText("AAPL")).not.toBeInTheDocument();
     expect(screen.getByText("MSFT")).toBeInTheDocument();
   });
+
+  it("selects result rows for the basket and updates the basket panel", async () => {
+    stubFetch();
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: /run screen/i }));
+    await waitFor(() => expect(screen.getByText("AAPL")).toBeInTheDocument());
+    expect(screen.getByText(/2 selected/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /select aapl/i }));
+    expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
+    expect(screen.getByText(/8 min/i)).toBeInTheDocument();
+  });
+
+  it("posts selected universe and exposes strategy filters", async () => {
+    const mock = stubFetch();
+    renderScreen();
+    fireEvent.change(screen.getByLabelText(/universe/i), { target: { value: "HK" } });
+    fireEvent.click(screen.getByRole("radio", { name: /breakout/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /liquid only/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run screen/i }));
+    await waitFor(() =>
+      expect(mock).toHaveBeenCalledWith(
+        "/api/screening/runs",
+        expect.objectContaining({
+          body: expect.stringContaining('"home_market":"HK"'),
+        })
+      )
+    );
+  });
 });
