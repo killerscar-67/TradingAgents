@@ -1,4 +1,5 @@
 import os
+import time
 import warnings
 from typing import Any, Optional
 
@@ -11,34 +12,48 @@ from .validators import validate_model
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
-    """ChatOpenAI with normalized content output.
+    """ChatOpenAI with normalized content output and connection-error retry.
 
     The Responses API returns content as a list of typed blocks
     (reasoning, text, etc.). This normalizes to string for consistent
     downstream handling.
     """
 
-    def invoke(self, input, config=None, **kwargs):
-        try:
-            return normalize_content(super().invoke(input, config, **kwargs))
-        except APIConnectionError as exc:
-            warnings.warn(
-                f"LLM provider connection error; returning conservative HOLD fallback: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return AIMessage(
-                content=(
-                    "HOLD\n\n"
-                    "LLM provider connection error. No live model response was "
-                    "available, so this is a conservative fallback rather than "
-                    "an analysis-derived recommendation."
-                )
-            )
+    retry_attempts: int = 3
 
-# Kwargs forwarded from user config to ChatOpenAI
+    def invoke(self, input, config=None, **kwargs):
+        for attempt in range(self.retry_attempts):
+            try:
+                return normalize_content(super().invoke(input, config, **kwargs))
+            except APIConnectionError as exc:
+                if attempt < self.retry_attempts - 1:
+                    delay = 2 ** attempt
+                    warnings.warn(
+                        f"LLM connection error (attempt {attempt + 1}/{self.retry_attempts}), "
+                        f"retrying in {delay}s: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    time.sleep(delay)
+                    continue
+                warnings.warn(
+                    f"LLM provider connection error after {self.retry_attempts} attempts; "
+                    f"returning conservative HOLD fallback: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return AIMessage(
+                    content=(
+                        "HOLD\n\n"
+                        "LLM provider connection error. No live model response was "
+                        "available, so this is a conservative fallback rather than "
+                        "an analysis-derived recommendation."
+                    )
+                )
+
+# Kwargs forwarded from user config to ChatOpenAI / NormalizedChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort",
+    "timeout", "max_retries", "retry_attempts", "reasoning_effort",
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 

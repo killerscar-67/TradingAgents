@@ -150,7 +150,10 @@ class TradingAgentsGraph:
 
     def _get_provider_kwargs(self) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation."""
-        kwargs = {}
+        kwargs = {
+            "timeout": self.config.get("llm_timeout", 300),
+            "retry_attempts": self.config.get("llm_retry_attempts", 3),
+        }
         provider = self.config.get("llm_provider", "").lower()
 
         if provider == "google":

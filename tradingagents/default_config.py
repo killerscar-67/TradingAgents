@@ -21,6 +21,13 @@ DEFAULT_CONFIG = {
     "deep_think_llm": os.getenv("TRADINGAGENTS_DEEP_THINK_LLM", "gpt-5.4"),
     "quick_think_llm": os.getenv("TRADINGAGENTS_QUICK_THINK_LLM", "gpt-5.4-mini"),
     "backend_url": "https://api.openai.com/v1",
+    # Seconds to wait for a single LLM response before treating it as a
+    # connection error.  Slow remote-thinking models (e.g. qwen3.6-plus) need
+    # at least 120 s for long-context research phases.
+    "llm_timeout": int(os.getenv("TRADINGAGENTS_LLM_TIMEOUT", "300")),
+    # How many times to retry a connection error before returning the HOLD
+    # fallback.  Each retry waits 2^attempt seconds (2 s, 4 s, 8 s …).
+    "llm_retry_attempts": int(os.getenv("TRADINGAGENTS_LLM_RETRY_ATTEMPTS", "3")),
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
