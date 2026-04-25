@@ -643,15 +643,35 @@ def _fetch_calendar_events(provider: str, regions: Iterable[str], start_date: st
             continue
         if region and region not in allowed:
             continue
+        raw_timestamp = row.get("date")
+        timestamp = str(raw_timestamp) if raw_timestamp is not None else ""
         records.append(
             {
-                "timestamp": row.get("date"),
-                "title": row.get("event") or row.get("name"),
+                "date": timestamp[:10],
+                "name": row.get("event") or row.get("name"),
                 "impact": impact,
                 "region": region or None,
             }
         )
     return records
+
+
+def _normalize_calendar_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for event in events:
+        raw_date = event.get("date") or event.get("timestamp")
+        raw_name = event.get("name") or event.get("title")
+        if not raw_date or not raw_name:
+            continue
+        normalized.append(
+            {
+                "date": str(raw_date)[:10],
+                "name": str(raw_name),
+                "impact": str(event.get("impact", "")),
+                "region": event.get("region"),
+            }
+        )
+    return normalized
 
 
 def get_market_overview(home_market: str, trade_date: Optional[str], settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -733,11 +753,13 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
             "sectors": sectors,
         }
 
-    events = _fetch_calendar_events(
+    events = _normalize_calendar_events(
+        _fetch_calendar_events(
         settings.get("calendar_provider", "fmp"),
         [resolved_market],
         as_of_date,
         (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat(),
+        )
     )
     home_payload = region_payloads[resolved_market]
     home_payload["regime"]["event_risk_flag"] = any(event.get("impact") == "high" for event in events)

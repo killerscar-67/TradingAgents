@@ -196,6 +196,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["regime"]["label"], "Trending bull")
         self.assertEqual(body["regime"]["suggested_entry_mode"], "breakout")
         self.assertTrue(body["regime"]["event_risk_flag"])
+        self.assertEqual(body["events"][0]["date"], "2026-04-23")
+        self.assertEqual(body["events"][0]["name"], "FOMC Minutes")
         self.assertIn("HK", body["regions"])
 
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download_risk_off), patch(
