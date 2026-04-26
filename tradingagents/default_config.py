@@ -164,4 +164,27 @@ DEFAULT_CONFIG = {
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # Trading style: "swing" (daily bars, full debate) or "daytrade" (intraday bars,
+    # session-aware, debate forced off). Default preserves existing swing behavior.
+    "trading_style": "swing",
+    # Intraday bar interval used when trading_style == "daytrade".
+    # Allowed: "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h".
+    "intraday_interval": "5m",
+    # IANA timezone for session-phase calculations.
+    "session_timezone": "America/New_York",
+    # Whether to include premarket/aftermarket bars in intraday fetches.
+    "include_extended_hours": False,
+    # Strict daytrade analyst set enforcement. When True, daytrade mode rejects
+    # analysts that need swing-horizon data (fundamentals/social) unless
+    # `allow_mismatched_analysts` is also True.
+    "daytrade_strict_analysts": True,
+    "allow_mismatched_analysts": False,
+    # Intraday prompt variants for A/B comparison. List of variant names; each
+    # variant produces a journaled decision. The first variant's decision flows
+    # to the trader/risk graph; others are journal-only.
+    "intraday_prompt_variants": ["default"],
+    # Trading journal (records every decision, action, outcome to SQLite for
+    # agent-vs-human and strategy A/B analysis).
+    "journal_enabled": True,
+    "journal_path": os.path.join(_TRADINGAGENTS_HOME, "journal.sqlite"),
 }

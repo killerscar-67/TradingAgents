@@ -553,16 +553,38 @@ def get_user_selections():
         )
         top_n = get_top_n(default=min(5, len(universe)), max_value=len(universe))
 
-    # Step 2: Analysis date
-    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    # Step 2a: Trading style
     console.print(
         create_question_box(
-            "Step 2: Analysis Date",
-            "Enter the analysis date (YYYY-MM-DD)",
-            default_date,
+            "Step 2a: Trading Style",
+            "Choose swing (daily, default) or day-trade (intraday)",
+            "swing",
         )
     )
-    analysis_date = get_analysis_date()
+    trading_style = ask_trading_style()
+
+    # Step 2b: Analysis date / datetime
+    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    if trading_style == "daytrade":
+        console.print(
+            create_question_box(
+                "Step 2b: Analysis Moment",
+                "Enter date or ISO 8601 datetime; outside RTH walks back to prior session",
+                default_date,
+            )
+        )
+        analysis_date = get_analysis_datetime()
+        intraday_interval = ask_intraday_interval()
+    else:
+        console.print(
+            create_question_box(
+                "Step 2b: Analysis Date",
+                "Enter the analysis date (YYYY-MM-DD)",
+                default_date,
+            )
+        )
+        analysis_date = get_analysis_date()
+        intraday_interval = None
 
     # Step 3: Output language
     console.print(
@@ -655,6 +677,8 @@ def get_user_selections():
         "openai_reasoning_effort": reasoning_effort,
         "anthropic_effort": anthropic_effort,
         "output_language": output_language,
+        "trading_style": trading_style,
+        "intraday_interval": intraday_interval,
     }
 
 
@@ -1083,12 +1107,17 @@ def format_tool_args(args, max_length=80) -> str:
     return result
 
 def run_analysis(
+    overrides: Optional[dict] = None,
     refresh_quant_cache: bool = False,
     quant_cache_ttl_days: int = 1,
     execution_mode: str = "llm_assisted",
 ):
     # First get all user selections
     selections = get_user_selections()
+    if overrides:
+        for k, v in overrides.items():
+            if v is not None:
+                selections[k] = v
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -1103,6 +1132,13 @@ def run_analysis(
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
+
+    # Trading style + intraday config (from claude/add-day-trading-features-GSpm1)
+    config["trading_style"] = selections.get("trading_style", "swing")
+    if selections.get("intraday_interval"):
+        config["intraday_interval"] = selections["intraday_interval"]
+
+    # Quant prefilter + execution mode (from feature/quant)
     normalized_mode = parse_execution_mode(execution_mode)
     if normalized_mode != execution_mode.strip().lower():
         console.print(
@@ -1378,6 +1414,20 @@ def run_analysis(
 
 @app.command()
 def analyze(
+    # Daytrade flags (from claude/add-day-trading-features-GSpm1)
+    trading_style: Optional[str] = typer.Option(
+        None, "--trading-style", "-s",
+        help="swing | daytrade. Overrides interactive prompt.",
+    ),
+    interval: Optional[str] = typer.Option(
+        None, "--interval", "-i",
+        help="Intraday bar interval (1m, 5m, 15m, 30m, 1h). Daytrade mode only.",
+    ),
+    when: Optional[str] = typer.Option(
+        None, "--datetime", "-d",
+        help="Analysis moment (YYYY-MM-DD or ISO 8601). Overrides interactive prompt.",
+    ),
+    # Quant flags (from feature/quant)
     execution_mode: str = typer.Option(
         "llm_assisted",
         "--execution-mode",
@@ -1394,7 +1444,14 @@ def analyze(
         help="Quant prefilter cache TTL in days (0 = only entries saved now, negative disables age expiry).",
     ),
 ):
+    """Run a single trading analysis. With no flags, prompts interactively."""
+    overrides = {
+        "trading_style": trading_style,
+        "intraday_interval": interval,
+        "analysis_date": when,
+    }
     run_analysis(
+        overrides={k: v for k, v in overrides.items() if v is not None} or None,
         execution_mode=execution_mode,
         refresh_quant_cache=refresh_quant_cache,
         quant_cache_ttl_days=quant_cache_ttl_days,

@@ -326,6 +326,78 @@ def ask_gemini_thinking_config() -> str | None:
     ).ask()
 
 
+def ask_trading_style() -> str:
+    """Ask whether to run in swing or daytrade mode."""
+    choice = questionary.select(
+        "Select Trading Style:",
+        choices=[
+            questionary.Choice("Swing (daily bars, full debate) — default", "swing"),
+            questionary.Choice("Day-trade (intraday bars, session-aware, debate off)", "daytrade"),
+        ],
+        style=questionary.Style([
+            ("selected", "fg:cyan noinherit"),
+            ("highlighted", "fg:cyan noinherit"),
+            ("pointer", "fg:cyan noinherit"),
+        ]),
+    ).ask()
+    if choice is None:
+        console.print("\n[red]No trading style selected. Exiting...[/red]")
+        exit(1)
+    return choice
+
+
+def ask_intraday_interval() -> str:
+    """Ask which intraday bar interval to use."""
+    choice = questionary.select(
+        "Select Intraday Bar Interval:",
+        choices=[
+            questionary.Choice("5 minute (default)", "5m"),
+            questionary.Choice("1 minute", "1m"),
+            questionary.Choice("15 minute", "15m"),
+            questionary.Choice("30 minute", "30m"),
+            questionary.Choice("1 hour", "1h"),
+        ],
+        style=questionary.Style([
+            ("selected", "fg:cyan noinherit"),
+            ("highlighted", "fg:cyan noinherit"),
+            ("pointer", "fg:cyan noinherit"),
+        ]),
+    ).ask()
+    if choice is None:
+        console.print("\n[red]No interval selected. Exiting...[/red]")
+        exit(1)
+    return choice
+
+
+def get_analysis_datetime() -> str:
+    """Prompt the user for a full ISO 8601 datetime in daytrade mode.
+
+    Accepts plain YYYY-MM-DD (treated as start of session in configured tz)
+    or full ISO datetimes like 2025-04-24T10:30:00-04:00.
+    """
+    import re
+    from datetime import datetime
+
+    def validate_dt(value: str) -> bool:
+        v = value.strip()
+        try:
+            datetime.fromisoformat(v)
+            return True
+        except ValueError:
+            pass
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", v))
+
+    raw = questionary.text(
+        "Enter analysis moment (YYYY-MM-DD or ISO 8601 like 2025-04-24T10:30:00-04:00):",
+        validate=lambda x: validate_dt(x) or "Invalid datetime; use YYYY-MM-DD or ISO 8601.",
+        style=questionary.Style([("text", "fg:green"), ("highlighted", "noinherit")]),
+    ).ask()
+    if not raw:
+        console.print("\n[red]No datetime provided. Exiting...[/red]")
+        exit(1)
+    return raw.strip()
+
+
 def ask_output_language() -> str:
     """Ask for report output language."""
     choice = questionary.select(

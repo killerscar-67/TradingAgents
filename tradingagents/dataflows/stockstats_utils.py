@@ -44,6 +44,91 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+# yfinance lookback caps per interval (see https://yfinance-python.org).
+# Hard limits enforced by Yahoo: requests beyond these silently truncate.
+_INTRADAY_MAX_LOOKBACK_DAYS = {
+    "1m": 7,
+    "2m": 60,
+    "5m": 60,
+    "15m": 60,
+    "30m": 60,
+    "60m": 730,
+    "90m": 60,
+    "1h": 730,
+}
+
+
+def load_ohlcv_intraday(
+    symbol: str,
+    end_date: str,
+    interval: str = "5m",
+    lookback_days: int = 5,
+    prepost: bool = False,
+) -> pd.DataFrame:
+    """Fetch intraday OHLCV bars with per-day caching.
+
+    Cache key is (symbol, interval, end_date, prepost) so daily and intraday
+    caches never collide and different sessions stay separate. Honors
+    yfinance's interval-specific lookback caps and raises ValueError if the
+    caller asks for more history than Yahoo will serve.
+    """
+    if interval not in _INTRADAY_MAX_LOOKBACK_DAYS:
+        raise ValueError(
+            f"Interval '{interval}' not supported for intraday loads. "
+            f"Allowed: {sorted(_INTRADAY_MAX_LOOKBACK_DAYS.keys())}"
+        )
+    max_lookback = _INTRADAY_MAX_LOOKBACK_DAYS[interval]
+    if lookback_days > max_lookback:
+        raise ValueError(
+            f"yfinance only serves {max_lookback}d of {interval} bars; "
+            f"requested {lookback_days}d. Use a coarser interval or shorter window."
+        )
+
+    config = get_config()
+    end_dt = pd.to_datetime(end_date)
+    start_dt = end_dt - pd.Timedelta(days=lookback_days)
+    # End is exclusive in yfinance — bump by one day so we include `end_date`.
+    fetch_end = end_dt + pd.Timedelta(days=1)
+
+    os.makedirs(config["data_cache_dir"], exist_ok=True)
+    prepost_tag = "ext" if prepost else "rth"
+    data_file = os.path.join(
+        config["data_cache_dir"],
+        f"{symbol}-YFin-intraday-{interval}-{prepost_tag}-"
+        f"{start_dt.date().isoformat()}-{end_dt.date().isoformat()}.csv",
+    )
+
+    if os.path.exists(data_file):
+        data = pd.read_csv(data_file, on_bad_lines="skip")
+    else:
+        ticker = yf.Ticker(symbol.upper())
+        data = yf_retry(lambda: ticker.history(
+            start=start_dt.strftime("%Y-%m-%d"),
+            end=fetch_end.strftime("%Y-%m-%d"),
+            interval=interval,
+            prepost=prepost,
+            auto_adjust=True,
+        ))
+        if data.empty:
+            return data
+        # Strip tz so downstream stockstats wrappers don't trip on tz-aware index.
+        if data.index.tz is not None:
+            data.index = data.index.tz_localize(None)
+        data = data.reset_index()
+        # Yahoo uses "Datetime" for intraday; rename to "Date" so _clean_dataframe works.
+        if "Datetime" in data.columns:
+            data = data.rename(columns={"Datetime": "Date"})
+        data.to_csv(data_file, index=False)
+
+    if data.empty:
+        return data
+
+    data = _clean_dataframe(data)
+    # Filter to end_date inclusive to prevent look-ahead (intraday backtests).
+    data = data[data["Date"] <= end_dt + pd.Timedelta(days=1)]
+    return data
+
+
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 

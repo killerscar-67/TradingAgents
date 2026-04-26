@@ -33,6 +33,13 @@ from tradingagents.agents.utils.agent_utils import (
     get_insider_transactions,
     get_global_news
 )
+from tradingagents.agents.utils.intraday_tools import (
+    get_intraday_stock_data,
+    get_intraday_indicators,
+    get_session_context,
+)
+
+from tradingagents.journal import Journal
 
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
@@ -81,6 +88,14 @@ class TradingAgentsGraph:
 
         # Update the interface's config
         set_config(self.config)
+
+        # Daytrade mode: enforce analyst-set policy and force debate off.
+        self.trading_style = self.config.get("trading_style", "swing")
+        if self.trading_style == "daytrade":
+            selected_analysts = self._enforce_daytrade_analysts(selected_analysts)
+            # Intraday decisions need to be fast — skip the bull/bear debate entirely.
+            # User can re-enable by setting trading_style=swing.
+            self.config["max_debate_rounds"] = 0
 
         # Create necessary directories
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
@@ -145,6 +160,15 @@ class TradingAgentsGraph:
         self.ticker = None
         self.log_states_dict = {}  # date to full state dict
 
+        # Trading journal (best-effort; never blocks runs)
+        self.journal: Optional[Journal] = None
+        if self.config.get("journal_enabled", False):
+            try:
+                self.journal = Journal(self.config["journal_path"])
+            except Exception as e:  # noqa: BLE001
+                print(f"[journal] init failed: {e}; journaling disabled for this run")
+                self.journal = None
+
         # Set up the graph
         self.graph = self.graph_setup.setup_graph(selected_analysts)
 
@@ -185,6 +209,13 @@ class TradingAgentsGraph:
                     get_quant_signals,
                 ]
             ),
+            "intraday_market": ToolNode(
+                [
+                    get_intraday_stock_data,
+                    get_intraday_indicators,
+                    get_session_context,
+                ]
+            ),
             "social": ToolNode(
                 [
                     # News tools for social media analysis
@@ -210,6 +241,42 @@ class TradingAgentsGraph:
             ),
         }
 
+    # Allowed analyst categories per trading style.
+    _DAYTRADE_PERMITTED_ANALYSTS = {"intraday_market", "news"}
+
+    def _enforce_daytrade_analysts(self, selected_analysts: List[str]) -> List[str]:
+        """Apply the daytrade analyst policy.
+
+        Strict mode (default): drop swing-only analysts (fundamentals, social, market)
+        and substitute `market` with `intraday_market`. Raise if the resulting set
+        is empty.
+
+        Permissive mode (`allow_mismatched_analysts=True`): only swap `market`
+        for `intraday_market`; everything else passes through.
+        """
+        strict = self.config.get("daytrade_strict_analysts", True)
+        allow_mismatched = self.config.get("allow_mismatched_analysts", False)
+
+        result: List[str] = []
+        for a in selected_analysts:
+            if a == "market":
+                result.append("intraday_market")
+            elif a == "intraday_market":
+                result.append("intraday_market")
+            elif a in self._DAYTRADE_PERMITTED_ANALYSTS:
+                result.append(a)
+            elif strict and not allow_mismatched:
+                # Drop silently with a console-visible warning.
+                print(f"[daytrade] Dropping analyst '{a}' (use allow_mismatched_analysts=True to override).")
+            else:
+                result.append(a)
+
+        # Ensure intraday_market is present — it's the analyst that produces the setup.
+        if "intraday_market" not in result:
+            result.insert(0, "intraday_market")
+
+        return result
+
     def propagate(
         self,
         company_name,
@@ -220,7 +287,10 @@ class TradingAgentsGraph:
 
         Args:
             company_name: Ticker symbol or company identifier.
-            trade_date: Date string (YYYY-MM-DD) or date object.
+            trade_date: Date string (YYYY-MM-DD) or date object. In daytrade mode,
+                may also be a full ISO 8601 datetime (e.g. "2025-04-24T10:30:00-04:00");
+                session context is resolved automatically and bars walk back to the
+                previous session when called outside RTH.
             quant_contract: Optional pre-scored QuantSignalContract. When provided
                 in quant_strict mode, the live quant fetch is skipped so the
                 returned order intent is derived from the same signal used during
@@ -235,7 +305,7 @@ class TradingAgentsGraph:
 
         # Initialize state
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date
+            company_name, trade_date, trading_style=self.trading_style,
         )
         args = self.propagator.get_graph_args()
 
@@ -260,6 +330,21 @@ class TradingAgentsGraph:
         # Log state
         self._log_state(trade_date, final_state)
 
+        # Journal the structured intraday decision(s) — best-effort, swing runs unaffected.
+        if self.journal is not None and self.trading_style == "daytrade":
+            decisions = final_state.get("intraday_decisions") or []
+            if decisions:
+                self.journal.record_decision_safely(
+                    symbol=company_name,
+                    trading_style=self.trading_style,
+                    decisions=decisions,
+                    state=final_state,
+                    config=self.config,
+                    also_log_agent_action=True,
+                )
+
+        # Build the quant order intent (from feature/quant). When quant_contract is
+        # supplied, the live quant fetch is skipped for deterministic prefilter-driven runs.
         order_intent = self.build_order_intent(
             company_name,
             str(trade_date),

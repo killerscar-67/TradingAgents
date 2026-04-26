@@ -5,7 +5,14 @@ import pandas as pd
 import yfinance as yf
 import os
 from .config import get_config
-from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry, load_ohlcv, filter_financials_by_date
+from .stockstats_utils import (
+    StockstatsUtils,
+    _clean_dataframe,
+    yf_retry,
+    load_ohlcv,
+    load_ohlcv_intraday,
+    filter_financials_by_date,
+)
 
 
 def _tool_cap_int(key: str, default: int) -> int:
@@ -95,6 +102,49 @@ def get_YFin_data_online(
         header += "# " + " ".join(notes) + "\n\n"
 
     return header + csv_string
+
+def get_YFin_intraday_online(
+    symbol: Annotated[str, "ticker symbol of the company"],
+    end_date: Annotated[str, "Session date (YYYY-MM-DD) — last day of bars to return"],
+    interval: Annotated[str, "Bar interval: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h"] = "5m",
+    lookback_days: Annotated[int, "How many calendar days of bars to fetch back from end_date"] = 5,
+    prepost: Annotated[bool, "Include premarket/aftermarket bars"] = False,
+):
+    """Fetch intraday OHLCV bars and return as CSV string.
+
+    Lookback is capped per yfinance limits (e.g. 7 days for 1m, 60 days for 5m).
+    Times are returned in the bar's native exchange timezone, stripped of tz info.
+    """
+    datetime.strptime(end_date, "%Y-%m-%d")
+
+    data = load_ohlcv_intraday(
+        symbol.upper(),
+        end_date=end_date,
+        interval=interval,
+        lookback_days=lookback_days,
+        prepost=prepost,
+    )
+
+    if data.empty:
+        return (
+            f"No intraday data found for symbol '{symbol}' "
+            f"({interval} bars, {lookback_days}d ending {end_date})"
+        )
+
+    numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
+    for col in numeric_columns:
+        if col in data.columns:
+            data[col] = data[col].round(2)
+
+    csv_string = data.to_csv(index=False)
+    header = (
+        f"# Intraday OHLCV for {symbol.upper()} ({interval}, prepost={prepost})\n"
+        f"# Window: {lookback_days}d ending {end_date}\n"
+        f"# Total bars: {len(data)}\n"
+        f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    )
+    return header + csv_string
+
 
 def get_stock_stats_indicators_window(
     symbol: Annotated[str, "ticker symbol of the company"],
