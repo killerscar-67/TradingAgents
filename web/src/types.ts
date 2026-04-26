@@ -129,6 +129,12 @@ export interface MarketCalendarEvent {
   impact: string;
 }
 
+export interface MarketCalendarStatus {
+  provider: string;
+  state: "ready" | "empty" | "unavailable";
+  message: string | null;
+}
+
 export interface MarketOverview {
   home_market?: string;
   trade_date?: string;
@@ -137,6 +143,7 @@ export interface MarketOverview {
   breadth: BreadthData;
   sectors?: SectorTile[];
   events?: MarketCalendarEvent[];
+  calendar_status?: MarketCalendarStatus;
   status: string;
 }
 

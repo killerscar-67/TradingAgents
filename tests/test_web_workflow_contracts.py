@@ -188,6 +188,10 @@ class WorkflowContractTests(unittest.TestCase):
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
             "tradingagents.web.workflow_service._fetch_calendar_events",
             return_value=[{"timestamp": "2026-04-23T14:00:00Z", "title": "FOMC Minutes", "impact": "high", "region": "US"}],
+        ), patch.dict(
+            os.environ,
+            {"FMP_API_KEY": "test-key"},
+            clear=False,
         ):
             resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
         self.assertEqual(resp.status_code, 200)
@@ -198,6 +202,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertTrue(body["regime"]["event_risk_flag"])
         self.assertEqual(body["events"][0]["date"], "2026-04-23")
         self.assertEqual(body["events"][0]["name"], "FOMC Minutes")
+        self.assertEqual(body["calendar_status"]["state"], "ready")
         self.assertIn("HK", body["regions"])
 
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download_risk_off), patch(
@@ -208,6 +213,20 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(risk_off.status_code, 200)
         self.assertEqual(risk_off.json()["regime"]["label"], "Risk-off")
         self.assertEqual(risk_off.json()["regime"]["suggested_entry_mode"], "auto")
+
+    def test_market_overview_marks_calendar_unavailable_without_fmp_key(self):
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch.dict(
+            os.environ,
+            {"FMP_API_KEY": ""},
+            clear=False,
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["events"], [])
+        self.assertEqual(body["calendar_status"]["state"], "unavailable")
+        self.assertIn("FMP_API_KEY", body["calendar_status"]["message"])
 
     def test_market_overview_accepts_yfinance_multiindex_history(self):
         def mock_multiindex_download(symbols, start, end):

@@ -3,8 +3,9 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WorkflowProvider } from "../contexts/WorkflowContext";
 import { MarketScreen } from "./MarketScreen";
+import type { MarketOverview } from "../types";
 
-const contractReadyOverview = {
+const contractReadyOverview: MarketOverview = {
   home_market: "US",
   trade_date: "2026-01-01",
   regime: {
@@ -32,6 +33,11 @@ const contractReadyOverview = {
     { date: "2026-01-02", name: "CPI", impact: "H" },
     { date: "2026-01-03", name: "Minor data", impact: "L" },
   ],
+  calendar_status: {
+    provider: "fmp",
+    state: "ready",
+    message: null,
+  },
   status: "ready",
 };
 
@@ -206,6 +212,23 @@ describe("MarketScreen", () => {
     expect(screen.getByText("Energy")).toBeInTheDocument();
     expect(screen.getByText("CPI")).toBeInTheDocument();
     expect(screen.queryByText("Minor data")).not.toBeInTheDocument();
+  });
+
+  it("shows a clear calendar empty state when the provider is unavailable", async () => {
+    stubFetch({
+      ...contractReadyOverview,
+      events: [],
+      calendar_status: {
+        provider: "fmp",
+        state: "unavailable",
+        message: "Economic calendar unavailable. Set FMP_API_KEY to load upcoming events.",
+      },
+    });
+    renderScreen();
+
+    await waitFor(() =>
+      expect(screen.getByText(/economic calendar unavailable\. set fmp_api_key to load upcoming events\./i)).toBeInTheDocument()
+    );
   });
 
   it("does not make extra market panel requests outside the overview payload", async () => {

@@ -97,6 +97,7 @@ export function MarketScreen() {
   const calendar = (overview?.events ?? []).filter((event: CalendarEvent) =>
     ["H", "M", "HIGH", "MEDIUM"].includes(String(event.impact).toUpperCase())
   );
+  const calendarStatus = overview?.calendar_status;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -365,15 +366,21 @@ export function MarketScreen() {
 
           <section className={styles.section}>
             <h2 className={styles.sectionTitle}>Economic calendar</h2>
-            <div className={styles.calendarList}>
-              {calendar.map((event) => (
-                <div key={`${event.date}-${event.name}`} className={styles.calendarEvent}>
-                  <span>{event.date}</span>
-                  <strong>{event.name}</strong>
-                  <span className={styles.impactBadge}>{event.impact}</span>
-                </div>
-              ))}
-            </div>
+            {calendar.length > 0 ? (
+              <div className={styles.calendarList}>
+                {calendar.map((event) => (
+                  <div key={`${event.date}-${event.name}`} className={styles.calendarEvent}>
+                    <span>{event.date}</span>
+                    <strong>{event.name}</strong>
+                    <span className={styles.impactBadge}>{event.impact}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={styles.emptyPanel}>
+                {calendarStatus?.message ?? "No medium or high impact events scheduled for the selected session."}
+              </div>
+            )}
           </section>
 
           <section className={styles.section}>

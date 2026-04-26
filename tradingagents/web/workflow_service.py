@@ -674,6 +674,27 @@ def _normalize_calendar_events(events: Iterable[Dict[str, Any]]) -> List[Dict[st
     return normalized
 
 
+def _calendar_status(provider: str, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized_provider = str(provider or "fmp").lower()
+    if normalized_provider == "fmp" and not os.getenv("FMP_API_KEY", "").strip():
+        return {
+            "provider": normalized_provider,
+            "state": "unavailable",
+            "message": "Economic calendar unavailable. Set FMP_API_KEY to load upcoming events.",
+        }
+    if events:
+        return {
+            "provider": normalized_provider,
+            "state": "ready",
+            "message": None,
+        }
+    return {
+        "provider": normalized_provider,
+        "state": "empty",
+        "message": "No medium or high impact events scheduled for the selected session.",
+    }
+
+
 def get_market_overview(home_market: str, trade_date: Optional[str], settings: Dict[str, Any]) -> Dict[str, Any]:
     requested_market = (home_market or "").upper()
     settings_market = str(settings.get("home_market", "US") or "US").upper()
@@ -753,14 +774,16 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
             "sectors": sectors,
         }
 
+    calendar_provider = settings.get("calendar_provider", "fmp")
     events = _normalize_calendar_events(
         _fetch_calendar_events(
-        settings.get("calendar_provider", "fmp"),
-        [resolved_market],
-        as_of_date,
-        (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat(),
+            calendar_provider,
+            [resolved_market],
+            as_of_date,
+            (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat(),
         )
     )
+    calendar_status = _calendar_status(str(calendar_provider), events)
     home_payload = region_payloads[resolved_market]
     home_payload["regime"]["event_risk_flag"] = any(event.get("impact") == "high" for event in events)
 
@@ -780,6 +803,7 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
         "breadth": home_payload["breadth"],
         "sectors": home_payload["sectors"],
         "events": events,
+        "calendar_status": calendar_status,
         "regions": regions,
         "stream": {
             "status": settings.get("live_quote_mode", "delayed_fallback"),
