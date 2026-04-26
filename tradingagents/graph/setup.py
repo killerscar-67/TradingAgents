@@ -43,7 +43,8 @@ class GraphSetup:
 
         Args:
             selected_analysts (list): List of analyst types to include. Options are:
-                - "market": Market analyst
+                - "market": Market analyst (swing-mode default)
+                - "intraday_market": Intraday market analyst (daytrade mode)
                 - "social": Social media analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
@@ -62,6 +63,13 @@ class GraphSetup:
             )
             delete_nodes["market"] = create_msg_delete()
             tool_nodes["market"] = self.tool_nodes["market"]
+
+        if "intraday_market" in selected_analysts:
+            analyst_nodes["intraday_market"] = create_intraday_market_analyst(
+                self.quick_thinking_llm
+            )
+            delete_nodes["intraday_market"] = create_msg_delete()
+            tool_nodes["intraday_market"] = self.tool_nodes["intraday_market"]
 
         if "social" in selected_analysts:
             analyst_nodes["social"] = create_social_media_analyst(

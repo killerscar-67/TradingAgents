@@ -3,6 +3,7 @@ from typing import Annotated
 # Import from vendor-specific modules
 from .y_finance import (
     get_YFin_data_online,
+    get_YFin_intraday_online,
     get_stock_stats_indicators_window,
     get_fundamentals as get_yfinance_fundamentals,
     get_balance_sheet as get_yfinance_balance_sheet,
@@ -10,6 +11,7 @@ from .y_finance import (
     get_income_statement as get_yfinance_income_statement,
     get_insider_transactions as get_yfinance_insider_transactions,
 )
+from .intraday_indicators import get_intraday_indicators_window
 from .yfinance_news import get_news_yfinance, get_global_news_yfinance
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
@@ -32,13 +34,15 @@ TOOLS_CATEGORIES = {
     "core_stock_apis": {
         "description": "OHLCV stock price data",
         "tools": [
-            "get_stock_data"
+            "get_stock_data",
+            "get_intraday_stock_data",
         ]
     },
     "technical_indicators": {
         "description": "Technical analysis indicators",
         "tools": [
-            "get_indicators"
+            "get_indicators",
+            "get_intraday_indicators",
         ]
     },
     "fundamental_data": {
@@ -76,6 +80,13 @@ VENDOR_METHODS = {
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+    },
+    # intraday tools (yfinance only in v1; AV intraday not wired)
+    "get_intraday_stock_data": {
+        "yfinance": get_YFin_intraday_online,
+    },
+    "get_intraday_indicators": {
+        "yfinance": get_intraday_indicators_window,
     },
     # fundamental_data
     "get_fundamentals": {

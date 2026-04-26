@@ -47,6 +47,15 @@ class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     trade_date: Annotated[str, "What date we are trading at"]
 
+    # Day-trading additions (optional; populated only when trading_style=='daytrade')
+    trade_datetime: Annotated[str, "Requested moment in ISO 8601 with tz (daytrade mode)"]
+    session_phase: Annotated[str, "premarket | open | morning | midday | power_hour | close | postmarket | closed"]
+    minutes_to_close: Annotated[int, "Minutes remaining until 16:00 ET (0 outside RTH)"]
+    data_session_date: Annotated[str, "Session date (YYYY-MM-DD) the loaded bars belong to"]
+    intraday_decisions: Annotated[
+        list, "Per-variant structured decisions from IntradayMarketAnalyst (A/B testing)"
+    ]
+
     sender: Annotated[str, "Agent that sent this message"]
 
     # research step
