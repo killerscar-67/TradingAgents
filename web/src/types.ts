@@ -170,6 +170,7 @@ export interface ScreeningResult {
 }
 
 export interface BasketData {
+  basket_id?: string;
   screening_run_id: string;
   symbols: string[];
   regime: RegimeData | null;

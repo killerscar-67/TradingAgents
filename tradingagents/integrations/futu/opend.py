@@ -16,6 +16,15 @@ class FutuStageOnlyAdapter:
         self.port = port
         self.enabled = enabled
 
+    def ping(self) -> str:
+        if not self.enabled:
+            return f"Futu disabled. Enable broker.futu.enabled in Settings."
+        try:
+            with socket.create_connection((self.host, self.port), timeout=1.0):
+                return f"Connected to Futu OpenD at {self.host}:{self.port}"
+        except OSError as exc:
+            raise RuntimeError(f"Cannot reach Futu OpenD at {self.host}:{self.port}: {exc}") from exc
+
     def stage_orders(self, stage_id: str, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not self.enabled:
             return {

@@ -4,6 +4,7 @@ import { useBatchEvents } from "../hooks/useBatchEvents";
 import { RunDetail } from "../components/RunDetail";
 import { InheritedChip } from "../components/InheritedChip";
 import { Dialog } from "../components/Dialog";
+import { apiUrl } from "../apiBase";
 import type { BatchItem } from "../types";
 import styles from "./BatchScreen.module.css";
 
@@ -23,7 +24,7 @@ function normalizeBatchStatus(status?: string): BatchItem["status"] {
 }
 
 export function BatchScreen() {
-  const { basket, setBatchId, updateBatchResult, batchId, batchResults, setScreen, autoAdvance } = useWorkflow();
+  const { basket, basketId, setBatchId, updateBatchResult, batchId, batchResults, setScreen, autoAdvance } = useWorkflow();
   const [symbols, setSymbols] = useState<string[]>(basket?.symbols ?? []);
   const [inputVal, setInputVal] = useState("");
   const [batchStarted, setBatchStarted] = useState(false);
@@ -97,10 +98,12 @@ export function BatchScreen() {
   const startBatch = async () => {
     setError(null);
     try {
-      const resp = await fetch("/api/batches", {
+      const body: Record<string, unknown> = { symbols };
+      if (basketId) body.basket_id = basketId;
+      const resp = await fetch(apiUrl("/api/batches"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbols }),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
@@ -123,14 +126,14 @@ export function BatchScreen() {
 
   const stopBatch = async () => {
     if (!batchId) return;
-    await fetch(`/api/batches/${batchId}/stop`, { method: "POST" });
+    await fetch(apiUrl(`/api/batches/${batchId}/stop`), { method: "POST" });
     setBatchStarted(false);
     setConfirmStopOpen(false);
   };
 
   const retryTicker = async (symbol: string) => {
     if (!batchId) return;
-    await fetch(`/api/batches/${batchId}/items/${symbol}/retry`, { method: "POST" });
+    await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/retry`), { method: "POST" });
   };
 
   const skipTicker = (symbol: string) => {

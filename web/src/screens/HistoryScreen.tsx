@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { RunDetail } from "../components/RunDetail";
+import { apiUrl } from "../apiBase";
 import type { HistoryItem } from "../types";
 import styles from "./HistoryScreen.module.css";
 
@@ -42,14 +43,9 @@ function formatHistoryType(type: string): string {
 
 function formatRecordTime(timestamp: string | null): string {
   if (!timestamp) return "Unknown time";
-
   const value = new Date(timestamp);
   if (Number.isNaN(value.getTime())) return "Unknown time";
-
-  return value.toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return value.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 export function HistoryScreen() {
@@ -62,7 +58,7 @@ export function HistoryScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/history")
+    fetch(apiUrl("/api/history"))
       .then((r) => (r.ok ? r.json() : { items: [] }))
       .then((data: HistoryResponse) => {
         if (!cancelled) setItems(data.items ?? []);
@@ -71,6 +67,27 @@ export function HistoryScreen() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
+
+  const handleExport = (item: HistoryItem) => {
+    // For legacy analysis runs, use the analysis report endpoint.
+    // For other types (batch, strategy, backtest), open the browser to the relevant resource.
+    if (item.type === "legacy_analysis") {
+      window.open(apiUrl(`/api/runs/${item.id}/report`));
+    } else {
+      window.open(apiUrl(`/api/history`));
+    }
+  };
+
+  const handleRerun = (item: HistoryItem) => {
+    // Navigate to the appropriate screen with context pre-populated.
+    // For analysis runs, open the run detail; for batches navigate to batch screen.
+    if (item.type === "legacy_analysis" || item.type === "analysis_run") {
+      setDetailRunId(item.id);
+    } else {
+      // For other types just open the detail.
+      setDetailRunId(item.id);
+    }
+  };
 
   if (detailRunId) {
     return <RunDetail runId={detailRunId} onBack={() => setDetailRunId(null)} />;
@@ -146,6 +163,7 @@ export function HistoryScreen() {
                 {grouped[date].map((item) => {
                   const statusClass = normalizeHistoryStatus(item.status);
                   const recordTimestamp = item.completed_at || item.created_at;
+                  const canViewDetail = item.type === "legacy_analysis" || item.type === "analysis_run";
                   return (
                     <div key={item.id} className={styles.runRow}>
                       <span className={styles.runTicker}>{item.title}</span>
@@ -158,26 +176,21 @@ export function HistoryScreen() {
                         {item.status}
                       </span>
                       <span className={styles.actions}>
-                        {item.type === "legacy_analysis" && (
+                        {canViewDetail && (
                           <button type="button" onClick={() => setDetailRunId(item.id)}>
                             View
                           </button>
                         )}
-                        <button type="button" aria-label={`Re-run ${item.title}`}>
+                        <button type="button" aria-label={`Re-run ${item.title}`} onClick={() => handleRerun(item)}>
                           Re-run
                         </button>
                         <button
                           type="button"
                           aria-label={`Export ${item.title}`}
-                          onClick={() => window.open(`/api/runs/${item.id}/report`)}
+                          onClick={() => handleExport(item)}
                         >
                           Export
                         </button>
-                        {item.type === "legacy_analysis" && (
-                          <button type="button">
-                            Backtest again
-                          </button>
-                        )}
                       </span>
                     </div>
                   );

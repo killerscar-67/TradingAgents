@@ -7,6 +7,7 @@ interface WorkflowState {
   regime: RegimeData | null;
   basket: BasketData | null;
   screeningRunId: string | null;
+  basketId: string | null;
   batchId: string | null;
   batchResults: Record<string, BatchItem>;
   strategyId: string | null;
@@ -20,6 +21,8 @@ type Action =
   | { type: "SET_AUTO_ADVANCE"; value: boolean }
   | { type: "SET_REGIME"; regime: RegimeData }
   | { type: "SET_BASKET"; basket: BasketData }
+  | { type: "SET_SCREENING_RUN_ID"; id: string }
+  | { type: "SET_BASKET_ID"; id: string }
   | { type: "SET_BATCH_ID"; id: string }
   | { type: "UPDATE_BATCH_RESULT"; ticker: string; item: BatchItem }
   | { type: "SET_STRATEGY_ID"; id: string; plan: TradePlan }
@@ -31,6 +34,7 @@ const initialState: WorkflowState = {
   regime: null,
   basket: null,
   screeningRunId: null,
+  basketId: null,
   batchId: null,
   batchResults: {},
   strategyId: null,
@@ -53,6 +57,10 @@ function reducer(state: WorkflowState, action: Action): WorkflowState {
       return { ...state, regime: action.regime };
     case "SET_BASKET":
       return { ...state, basket: action.basket };
+    case "SET_SCREENING_RUN_ID":
+      return { ...state, screeningRunId: action.id };
+    case "SET_BASKET_ID":
+      return { ...state, basketId: action.id };
     case "SET_BATCH_ID":
       return { ...state, batchId: action.id, batchResults: {} };
     case "UPDATE_BATCH_RESULT":
@@ -74,6 +82,8 @@ interface WorkflowContextValue extends WorkflowState {
   setAutoAdvance: (v: boolean) => void;
   setRegime: (r: RegimeData) => void;
   setBasket: (b: BasketData) => void;
+  setScreeningRunId: (id: string) => void;
+  setBasketId: (id: string) => void;
   setBatchId: (id: string) => void;
   updateBatchResult: (ticker: string, item: BatchItem) => void;
   setStrategyId: (id: string, plan: TradePlan) => void;
@@ -101,6 +111,14 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "SET_BASKET", basket });
   }, []);
 
+  const setScreeningRunId = useCallback((id: string) => {
+    dispatch({ type: "SET_SCREENING_RUN_ID", id });
+  }, []);
+
+  const setBasketId = useCallback((id: string) => {
+    dispatch({ type: "SET_BASKET_ID", id });
+  }, []);
+
   const setBatchId = useCallback((id: string) => {
     dispatch({ type: "SET_BATCH_ID", id });
   }, []);
@@ -123,6 +141,8 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     setAutoAdvance,
     setRegime,
     setBasket,
+    setScreeningRunId,
+    setBasketId,
     setBatchId,
     updateBatchResult,
     setStrategyId,

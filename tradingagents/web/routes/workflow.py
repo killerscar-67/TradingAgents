@@ -353,6 +353,23 @@ def create_strategy_from_batch(req: StrategyFromBatchRequest) -> Dict[str, Any]:
     }
 
 
+@router.post("/api/broker/futu/ping")
+def ping_futu() -> Dict[str, Any]:
+    settings = get_workflow_store().get_settings_without_status()
+    broker_cfg = settings.get("broker", {}).get("futu", {})
+    from tradingagents.integrations.futu.opend import FutuStageOnlyAdapter
+    adapter = FutuStageOnlyAdapter(
+        host=broker_cfg.get("host", "127.0.0.1"),
+        port=int(broker_cfg.get("port", 11111)),
+        enabled=bool(broker_cfg.get("enabled", False)),
+    )
+    try:
+        result = adapter.ping()
+        return {"status": "ok", "detail": result}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
 @router.post("/api/broker/futu/stage")
 def stage_futu_orders(req: FutuStageRequest) -> Dict[str, Any]:
     store = get_workflow_store()

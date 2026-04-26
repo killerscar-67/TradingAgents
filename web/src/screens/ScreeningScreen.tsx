@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useWorkflow } from "../contexts/WorkflowContext";
 import { InheritedChip } from "../components/InheritedChip";
+import { apiUrl } from "../apiBase";
 import type { ScreeningResult, BasketData } from "../types";
 import styles from "./ScreeningScreen.module.css";
 
@@ -17,7 +18,7 @@ function getResultSignal(result: ScreeningResult): string {
 }
 
 export function ScreeningScreen() {
-  const { regime, setBasket, setScreen, autoAdvance } = useWorkflow();
+  const { regime, setBasket, setScreen, setScreeningRunId, setBasketId, autoAdvance } = useWorkflow();
   const [results, setResults] = useState<ScreeningResult[]>([]);
   const [selectedSymbols, setSelectedSymbols] = useState<Set<string>>(new Set());
   const [runId, setRunId] = useState<string | null>(null);
@@ -47,7 +48,7 @@ export function ScreeningScreen() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch("/api/screening/runs", {
+      const resp = await fetch(apiUrl("/api/screening/runs"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -61,18 +62,11 @@ export function ScreeningScreen() {
       const data = await resp.json();
       const nextResults = data.results ?? [];
       setRunId(data.run_id);
+      setScreeningRunId(data.run_id);
       setResults(nextResults);
       setSelectedSymbols(new Set(nextResults.map((result: ScreeningResult) => result.symbol)));
       if (autoAdvance && data.run_id && nextResults.length > 0) {
-        const basket: BasketData = {
-          screening_run_id: data.run_id,
-          symbols: nextResults.map((result: ScreeningResult) => result.symbol),
-          regime: regime ?? null,
-          created_at: new Date().toISOString(),
-          status: "ready",
-        };
-        setBasket(basket);
-        setScreen("batch");
+        await buildAndNavigateBasket(data.run_id, nextResults.map((r: ScreeningResult) => r.symbol));
       }
     } catch (e) {
       setError(String(e));
@@ -81,21 +75,52 @@ export function ScreeningScreen() {
     }
   };
 
-  const handleBuildBasket = () => {
+  const buildAndNavigateBasket = async (screeningRunId: string, symbols: string[]) => {
+    try {
+      const resp = await fetch(apiUrl("/api/baskets"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbols,
+          name: "Screening basket",
+          source_screening_run_id: screeningRunId,
+        }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const basketId: string = data.basket_id;
+      setBasketId(basketId);
+      const basket: BasketData = {
+        basket_id: basketId,
+        screening_run_id: screeningRunId,
+        symbols,
+        regime: regime ?? null,
+        created_at: new Date().toISOString(),
+        status: "ready",
+      };
+      setBasket(basket);
+      setScreen("batch");
+    } catch {
+      // Non-critical — fall back to in-memory basket
+      const basket: BasketData = {
+        screening_run_id: screeningRunId,
+        symbols,
+        regime: regime ?? null,
+        created_at: new Date().toISOString(),
+        status: "ready",
+      };
+      setBasket(basket);
+      setScreen("batch");
+    }
+  };
+
+  const handleBuildBasket = async () => {
     if (!runId || results.length === 0) return;
     const symbols = results
       .map((result) => result.symbol)
       .filter((symbol) => selectedSymbols.has(symbol));
     if (symbols.length === 0) return;
-    const basket: BasketData = {
-      screening_run_id: runId,
-      symbols,
-      regime: regime ?? null,
-      created_at: new Date().toISOString(),
-      status: "ready",
-    };
-    setBasket(basket);
-    setScreen("batch");
+    await buildAndNavigateBasket(runId, symbols);
   };
 
   const handleAddRemove = (symbol: string) => {

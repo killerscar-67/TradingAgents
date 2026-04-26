@@ -3,6 +3,7 @@ import { useWorkflow } from "../contexts/WorkflowContext";
 import { useBacktestEvents } from "../hooks/useBacktestEvents";
 import { TradingChart } from "../components/TradingChart";
 import { InheritedChip } from "../components/InheritedChip";
+import { apiUrl } from "../apiBase";
 import type { BacktestRun } from "../types";
 import styles from "./BacktestScreen.module.css";
 
@@ -218,7 +219,7 @@ export function BacktestScreen() {
 
     const fetchResult = async () => {
       try {
-        const resp = await fetch(`/api/backtests/${backtestId}`);
+        const resp = await fetch(apiUrl(`/api/backtests/${backtestId}`));
         if (!resp.ok) return;
         const data: BacktestApiResponse = await resp.json();
         if (!cancelled) {
@@ -248,7 +249,7 @@ export function BacktestScreen() {
     setError(null);
     setRun(null);
     try {
-      const resp = await fetch("/api/backtests", {
+      const resp = await fetch(apiUrl("/api/backtests"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

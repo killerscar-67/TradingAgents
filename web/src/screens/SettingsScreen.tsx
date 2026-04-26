@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useSettings } from "../hooks/useSettings";
 import { useModels } from "../hooks/useModels";
+import { apiUrl } from "../apiBase";
 import type { AppSettings } from "../types";
 import styles from "./SettingsScreen.module.css";
 
@@ -47,9 +48,14 @@ export function SettingsScreen() {
   const testFutuConnection = async () => {
     setBrokerStatus("Testing...");
     try {
-      const resp = await fetch("/api/broker/futu/ping", { method: "POST" });
+      const resp = await fetch(apiUrl("/api/broker/futu/ping"), { method: "POST" });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      setBrokerStatus("Connection ready");
+      const data: { status: string; detail: string } = await resp.json();
+      if (data.status === "ok") {
+        setBrokerStatus(`Connected: ${data.detail}`);
+      } else {
+        setBrokerStatus(`Error: ${data.detail}`);
+      }
     } catch (e) {
       setBrokerStatus(`Connection failed: ${String(e)}`);
     }

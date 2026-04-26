@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWorkflow } from "../contexts/WorkflowContext";
 import { TradingChart } from "../components/TradingChart";
 import { InheritedChip } from "../components/InheritedChip";
 import { Dialog } from "../components/Dialog";
+import { apiUrl } from "../apiBase";
+import type { OhlcBar, PriceLine } from "../components/TradingChart";
 import type { TradePlan } from "../types";
 import styles from "./StrategyScreen.module.css";
 
@@ -71,22 +73,72 @@ export function StrategyScreen() {
   const [error, setError] = useState<string | null>(null);
   const [portfolioSize, setPortfolioSize] = useState(100_000);
   const [riskPct, setRiskPct] = useState(1);
+  const [allowShorts, setAllowShorts] = useState(true);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [chartBars, setChartBars] = useState<OhlcBar[]>([]);
+  const [chartLines, setChartLines] = useState<PriceLine[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const chartRequestRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const fetchTickerChart = useCallback(async (ticker: string, entry: number, stop: number, target: number) => {
+    const id = ++chartRequestRef.current;
+    setChartLoading(true);
+    setChartBars([]);
+    try {
+      const resp = await fetch(apiUrl(`/api/market/chart?symbol=${encodeURIComponent(ticker)}&interval=1D&limit=90`));
+      if (!mountedRef.current || id !== chartRequestRef.current) return;
+      if (resp.ok) {
+        const data = await resp.json();
+        setChartBars(data.bars ?? []);
+      }
+      setChartLines([
+        { price: entry, color: "#22c55e", label: "Entry" },
+        { price: stop, color: "#ef4444", label: "Stop" },
+        { price: target, color: "#3b82f6", label: "Target" },
+      ]);
+    } catch {
+      if (mountedRef.current && id === chartRequestRef.current) {
+        setChartBars([]);
+      }
+    } finally {
+      if (mountedRef.current && id === chartRequestRef.current) {
+        setChartLoading(false);
+      }
+    }
+  }, []);
+
+  const handleRowClick = (ticker: string, entry: number, stop: number, target: number) => {
+    setSelectedTicker(ticker);
+    void fetchTickerChart(ticker, entry, stop, target);
+  };
 
   const handleLoadPlan = async () => {
     if (!batchId) return;
     setLoadingPlan(true);
     setError(null);
     try {
-      const resp = await fetch("/api/strategies/from-batch", {
+      const resp = await fetch(apiUrl("/api/strategies/from-batch"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ batch_id: batchId }),
+        body: JSON.stringify({
+          batch_id: batchId,
+          portfolio_size: portfolioSize,
+          risk_per_trade: riskPct / 100,
+          allow_shorts: allowShorts,
+          horizon: "intraday",
+        }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data: StrategyResponse = await resp.json();
       const plan = mapStrategyResponseToTradePlan(data);
-      setPortfolioSize(Number(data.request?.portfolio_size ?? 100_000));
+      setPortfolioSize(Number(data.request?.portfolio_size ?? portfolioSize));
       setStrategyId(data.strategy_id, plan);
       if (autoAdvance) {
         setScreen("backtest");
@@ -111,7 +163,7 @@ export function StrategyScreen() {
       if (!entry) {
         throw new Error(`Unknown staged symbol ${stagingEntry}`);
       }
-      const resp = await fetch("/api/broker/futu/stage", {
+      const resp = await fetch(apiUrl("/api/broker/futu/stage"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -209,11 +261,43 @@ export function StrategyScreen() {
       </header>
 
       {error && <div className={styles.error}>{error}</div>}
-
       {toast && <div className={styles.toast}>{toast}</div>}
 
       {!tradePlan ? (
         <div className={styles.loadArea}>
+          <div className={styles.portfolioInputs}>
+            <div className={styles.inputRow}>
+              <label htmlFor="portfolio-size">Portfolio size ($)</label>
+              <input
+                id="portfolio-size"
+                type="number"
+                min={1}
+                value={portfolioSize}
+                onChange={(e) => setPortfolioSize(Number(e.target.value))}
+              />
+            </div>
+            <div className={styles.inputRow}>
+              <label htmlFor="risk-per-trade">Risk per trade (%)</label>
+              <input
+                id="risk-per-trade"
+                type="number"
+                min={0}
+                max={5}
+                step={0.25}
+                value={riskPct}
+                onChange={(e) => setRiskPct(Number(e.target.value))}
+              />
+              <span>Max loss ${((portfolioSize * riskPct) / 100).toFixed(0)}</span>
+            </div>
+            <label className={styles.inputRow}>
+              <input
+                type="checkbox"
+                checked={allowShorts}
+                onChange={(e) => setAllowShorts(e.target.checked)}
+              />
+              Allow shorts
+            </label>
+          </div>
           <button className={styles.loadBtn} onClick={handleLoadPlan} disabled={loadingPlan}>
             {loadingPlan ? "Loading plan…" : "Generate strategy from batch"}
           </button>
@@ -240,7 +324,22 @@ export function StrategyScreen() {
           </div>
 
           <div className={styles.chartArea}>
-            <TradingChart height={200} />
+            {selectedTicker ? (
+              <>
+                <div className={styles.chartLabel}>{selectedTicker} — daily</div>
+                <TradingChart
+                  mode="candlestick"
+                  bars={chartBars}
+                  priceLines={chartLines}
+                  height={200}
+                  loading={chartLoading}
+                />
+              </>
+            ) : (
+              <div className={styles.chartPlaceholder}>
+                Click a row to load the ticker chart
+              </div>
+            )}
           </div>
 
           <div className={styles.portfolioInputs}>
@@ -290,7 +389,12 @@ export function StrategyScreen() {
             </thead>
             <tbody>
               {tradePlan.entries.map((entry) => (
-                <tr key={entry.ticker} className={styles.tr}>
+                <tr
+                  key={entry.ticker}
+                  className={`${styles.tr} ${selectedTicker === entry.ticker ? styles.trSelected : ""}`}
+                  onClick={() => handleRowClick(entry.ticker, entry.entry, entry.stop, entry.target)}
+                  style={{ cursor: "pointer" }}
+                >
                   <td className={`${styles.td} ${styles.symbol}`}>{entry.ticker}</td>
                   <td className={`${styles.td} ${entry.direction === "LONG" ? styles.long : styles.short}`}>
                     {entry.direction}
@@ -307,12 +411,13 @@ export function StrategyScreen() {
                       aria-label={`Notes for ${entry.ticker}`}
                       value={notes[entry.ticker] ?? ""}
                       onChange={(e) => setNotes((prev) => ({ ...prev, [entry.ticker]: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
                     />
                   </td>
                   <td className={styles.td}>
                     <button
                       className={styles.futuBtn}
-                      onClick={() => openFutuDialog(entry.ticker)}
+                      onClick={(e) => { e.stopPropagation(); openFutuDialog(entry.ticker); }}
                     >
                       Send to Futu
                     </button>
