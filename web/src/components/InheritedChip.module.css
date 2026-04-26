@@ -1,0 +1,22 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: #1e2d4a;
+  border: 1px solid #2d4a7a;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #60a5fa;
+  white-space: nowrap;
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  background: #253a5e;
+  border-color: #3b6bbf;
+  color: #93c5fd;
+}

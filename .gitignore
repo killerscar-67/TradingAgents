@@ -156,6 +156,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+tradingagent_venv/
 
 # Spyder project settings
 .spyderproject
@@ -217,3 +218,18 @@ __marimo__/
 
 # Cache
 **/data_cache/
+
+# TradingAgents runtime outputs
+.env.enterprise
+~/.tradingagents/
+*.log
+results/
+
+# TradingAgents cache directories (written to ~/.tradingagents/ by default,
+# but could be overridden to a local path via env vars)
+cache/
+intraday/
+quant_prefilter/
+
+# macOS
+.DS_Store

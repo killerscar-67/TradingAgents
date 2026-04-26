@@ -24,8 +24,8 @@ config["data_vendors"] = {
 ta = TradingAgentsGraph(debug=True, config=config)
 
 # forward propagate
-_, decision = ta.propagate("NVDA", "2024-05-10")
-print(decision)
+_, order_intent = ta.propagate("NVDA", "2024-05-10")
+print(order_intent["rating"])
 
 # Memorize mistakes and reflect
 # ta.reflect_and_remember(1000) # parameter is the position returns

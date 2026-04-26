@@ -7,6 +7,9 @@ from tradingagents.agents.utils.core_stock_tools import (
 from tradingagents.agents.utils.technical_indicators_tools import (
     get_indicators
 )
+from tradingagents.agents.utils.quant_tools import (
+    get_quant_signals
+)
 from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
     get_balance_sheet,
@@ -41,6 +44,70 @@ def build_instrument_context(ticker: str) -> str:
         "Use this exact ticker in every tool call, report, and recommendation, "
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
     )
+
+
+def get_context_mode() -> str:
+    """Return the configured context mode: 'compact' or 'full'."""
+    from tradingagents.dataflows.config import get_config
+    return get_config().get("context_mode", "compact")
+
+
+def get_context_cfg() -> dict:
+    """Return all compact-context tuning values from config in one call."""
+    from tradingagents.dataflows.config import get_config
+    cfg = get_config()
+    return {
+        "mode": cfg.get("context_mode", "compact"),
+        "brief_max_chars": int(cfg.get("brief_max_chars", 400)),
+        "debate_max_chars": int(cfg.get("debate_max_chars", 2000)),
+        "debate_preserve_chars": int(cfg.get("debate_preserve_chars", 600)),
+    }
+
+
+def extract_brief(report: str, max_chars: int = 400) -> str:
+    """Truncate a report to max_chars, appending ellipsis if cut."""
+    if not report:
+        return ""
+    report = report.strip()
+    if len(report) <= max_chars:
+        return report
+    return report[:max_chars].rstrip() + "…"
+
+
+def build_analysis_brief(
+    market: str,
+    sentiment: str,
+    news: str,
+    fundamentals: str,
+    max_chars: int = 400,
+) -> dict:
+    """Build compact brief dict keyed by report type."""
+    return {
+        "market": extract_brief(market, max_chars),
+        "sentiment": extract_brief(sentiment, max_chars),
+        "news": extract_brief(news, max_chars),
+        "fundamentals": extract_brief(fundamentals, max_chars),
+    }
+
+
+def cap_debate_history(
+    history: str,
+    max_chars: int = 2000,
+    preserve_latest_chars: int = 600,
+) -> str:
+    """Keep the tail of debate history within max_chars.
+
+    Preserves the most-recent preserve_latest_chars verbatim, then fills
+    remaining budget with the earliest content (separated by a gap marker).
+    """
+    if not history or len(history) <= max_chars:
+        return history
+    tail = history[-preserve_latest_chars:]
+    head_budget = max_chars - preserve_latest_chars - 40  # room for marker
+    if head_budget > 0:
+        head = history[:head_budget].rstrip()
+        return head + "\n…[history truncated]…\n" + tail
+    return "…[history truncated]…\n" + tail
 
 def create_msg_delete():
     def delete_messages(state):

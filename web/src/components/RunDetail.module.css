@@ -1,0 +1,101 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0f1117;
+  color: #e2e8f0;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
+}
+
+.backBtn {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.backBtn:hover {
+  color: #94a3b8;
+}
+
+.ticker {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.date {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.statusBadge {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.statusPending { background: #1e293b; color: #64748b; }
+.statusRunning { background: #422006; color: #fbbf24; }
+.statusDone    { background: #052e16; color: #4ade80; }
+.statusError   { background: #450a0a; color: #f87171; }
+
+.headerError {
+  font-size: 12px;
+  color: #f87171;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 220px;
+  border-right: 1px solid #1e293b;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.consultant {
+  width: 300px;
+  border-left: 1px solid #1e293b;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.errorPage {
+  padding: 32px;
+  background: #0f1117;
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+
+.errorMsg {
+  color: #f87171;
+  font-size: 14px;
+  margin-top: 12px;
+}

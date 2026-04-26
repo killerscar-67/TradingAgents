@@ -1,0 +1,50 @@
+# Phase 0 Handoff - Execution Contracts
+Agent: Copilot
+Date: 2026-04-21 (revised after review)
+
+## What was built
+- `tradingagents/quant/contracts.py`: added deterministic typed contracts and helpers for execution mode parsing, quant signal normalization, and order intent construction. Added `QuantSignalContract.from_dict()` for round-trip reconstruction from stored dicts. `from_raw` sets `score = float('-inf')` when `error` is present.
+- `tradingagents/quant/__init__.py`: exported contract symbols for import stability.
+- `tradingagents/default_config.py`: added `execution_mode` config key and safe integer env parsing for quant cache TTL.
+- `tradingagents/graph/trading_graph.py`: `propagate` now returns `(final_state, order_intent_dict)` where `order_intent_dict` includes `rating` and `blocked`. `build_order_intent` accepts an optional `quant_contract` parameter; when provided in `quant_strict` mode the live fetch is skipped, preserving determinism for universe flows. `propagate_prefiltered_universe` reconstructs the prefilter contract via `from_dict` and passes it through, eliminating duplicate quant API calls.
+- `tradingagents/graph/signal_processing.py`: strict mode now avoids LLM calls and uses deterministic rating extraction.
+- `tradingagents/graph/prefilter.py`: quant ranking now includes normalized `QuantSignalContract` payload in each scored item.
+- `cli/main.py`: added `--execution-mode` option with `parse_execution_mode()` validation and warning on unknown values. `run_prefiltered_universe_analysis` now delegates to `graph.propagate_prefiltered_universe` (single code path). Summary table includes a **Blocked** column so errored signals are never silently shown as actionable decisions.
+- `.vscode/settings.json`: fixed invalid JSON and kept single interpreter object.
+- `requirements.txt`: editable install entry (`.`) present.
+- `pyproject.toml`: `vectorbt` moved to `[project.optional-dependencies]` (`vectorbt` extras group); the `try/except` guard in `quant_tools.py` is now the correct defensive pattern for optional installs.
+- `tests/test_execution_contracts.py`: added unit tests for contracts and strict-mode signal processing behavior.
+
+## Contracts exposed to next phase
+- `QuantSignalContract` (`tradingagents/quant/contracts.py`): deterministic normalized quant signal schema. Use `from_raw()` to parse tool output; use `from_dict()` to reconstruct from stored payload.
+- `OrderIntentContract` (`tradingagents/quant/contracts.py`): typed execution intent schema with `source`/`execution_mode`/`blocked`/`reason`/`annotations`.
+- `ExecutionMode` (`tradingagents/quant/contracts.py`): `"llm_assisted" | "quant_strict"` mode contract.
+- `TradeRating` (`tradingagents/quant/contracts.py`): enum of `{BUY, OVERWEIGHT, HOLD, UNDERWEIGHT, SELL}`.
+- `TradingAgentsGraph.propagate(symbol, trade_date, quant_contract=None)` returns `(final_state, order_intent_dict)`.
+- `TradingAgentsGraph.build_order_intent(symbol, trade_date, text, quant_contract=None)` — canonical execution intent builder.
+
+## Config keys added
+- `execution_mode`: `str`, default `llm_assisted`, env override `TRADINGAGENTS_EXECUTION_MODE`.
+- `quant_prefilter_cache_ttl_days`: now read with safe parsing from env `TRADINGAGENTS_QUANT_CACHE_TTL_DAYS`.
+
+## Test command
+`/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v`
+
+Expected: 15 tests, all OK.
+
+## Known limitations / deferred decisions
+- Strict mode currently derives executable intent from `get_quant_signals` per symbol/date; no broker adapter wiring yet (planned for later phases).
+- `propagate` still executes the LLM graph for annotations/reporting; strict mode only changes order-intent derivation path.
+- `OrderIntentContract` is consumed as a dict in CLI/graph compatibility paths; dataclass-native handoff to broker layer is deferred to Phase 4.
+- DashScope aliasing has no log warning when env var substitution fires (LOW severity, no execution impact).
+
+## What the reviewer must focus on
+- Verify no LLM-dependent extraction is required to get strict-mode order intent.
+- Verify `execution_mode=quant_strict` is deterministic: prefilter contract is reused by `build_order_intent`, no second live fetch.
+- Verify `propagate` return value carries `blocked` and callers surface it.
+- Verify typed contracts are the stable interface for next phases and no duplicate contract schema exists elsewhere.
+- Verify CLI routes through `graph.propagate_prefiltered_universe` (not a separate direct call to `score_tickers_with_quant`).
+
+## Fix notes
+- 2026-04-21T16:21:34+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md
+- 2026-04-21T15:47:44+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md

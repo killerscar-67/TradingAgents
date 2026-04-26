@@ -1,0 +1,274 @@
+.page {
+  padding: 32px;
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.liveIndicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #475569;
+}
+
+.liveDotActive {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.liveLabel {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionHeader {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.chartControlStack {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.chartModeGroup {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.sessionHint {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chartModeBtn {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 999px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+
+.chartModeBtnActive {
+  background: #1d4ed8;
+  border-color: #2563eb;
+  color: #eff6ff;
+}
+
+.regimeCard {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.regimeLabel {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-bottom: 8px;
+}
+
+.regimeMeta {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.regimeDate {
+  font-size: 12px;
+  color: #475569;
+}
+
+.indexGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.indexTile {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.indexSymbol {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-bottom: 2px;
+}
+
+.indexName {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.indexPrice {
+  font-size: 16px;
+  font-weight: 500;
+  color: #e2e8f0;
+  margin-bottom: 2px;
+}
+
+.indexChange {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.positive {
+  color: #4ade80;
+}
+
+.negative {
+  color: #f87171;
+}
+
+.breadthRow {
+  display: flex;
+  gap: 24px;
+}
+
+.breadthItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.breadthValue {
+  font-size: 22px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.breadthLabel {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.sectorGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+.sectorTile {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+}
+
+.sectorTile span {
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sectorTile strong {
+  font-size: 13px;
+}
+
+.calendarList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.emptyPanel {
+  background: #161b27;
+  border: 1px dashed #334155;
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 12px;
+}
+
+.calendarEvent {
+  align-items: center;
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  color: #cbd5e1;
+  display: grid;
+  font-size: 13px;
+  gap: 12px;
+  grid-template-columns: 110px 1fr auto;
+  padding: 10px 12px;
+}
+
+.impactBadge {
+  background: #422006;
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.empty {
+  padding-top: 80px;
+  text-align: center;
+  font-size: 14px;
+  color: #475569;
+}

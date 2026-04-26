@@ -78,6 +78,7 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "analysis_brief": {},
         }
 
         if trading_style == "daytrade":

@@ -1,5 +1,6 @@
 from typing import Optional
 import datetime
+import os
 import typer
 from pathlib import Path
 from functools import wraps
@@ -9,6 +10,15 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 load_dotenv(".env.enterprise", override=False)
+
+# If user supplied a DashScope key in their .env, make it available as
+# OPENAI_API_KEY so OpenAI-compatible clients (langchain/openai) work
+# when code expects OPENAI_API_KEY. Also accept the common misspelling
+# `DASHCOPE_API_KEY` as a fallback.
+if not os.environ.get("OPENAI_API_KEY"):
+    ds_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("DASHCOPE_API_KEY")
+    if ds_key:
+        os.environ["OPENAI_API_KEY"] = ds_key
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.live import Live
@@ -26,6 +36,7 @@ from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.quant.contracts import parse_execution_mode
 from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
@@ -253,6 +264,20 @@ def format_tokens(n):
     return str(n)
 
 
+def top_token_bucket(bucket_stats):
+    """Return the highest-token bucket as (name, total_tokens), if any."""
+    best_name = None
+    best_total = 0
+    for name, totals in (bucket_stats or {}).items():
+        total = int(totals.get("tokens_in", 0) or 0) + int(totals.get("tokens_out", 0) or 0)
+        if total > best_total:
+            best_name = name
+            best_total = total
+    if best_name is None:
+        return None
+    return best_name, best_total
+
+
 def update_display(layout, spinner_text=None, stats_handler=None, start_time=None):
     # Header with welcome message
     layout["header"].update(
@@ -445,6 +470,14 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
             tokens_str = "Tokens: --"
         stats_parts.append(tokens_str)
 
+        top_agent = top_token_bucket(stats.get("per_agent"))
+        if top_agent:
+            stats_parts.append(f"Top Agent: {top_agent[0]} {format_tokens(top_agent[1])}")
+
+        top_stage = top_token_bucket(stats.get("per_stage"))
+        if top_stage:
+            stats_parts.append(f"Top Stage: {top_stage[0]} {format_tokens(top_stage[1])}")
+
     stats_parts.append(f"Reports: {reports_completed}/{reports_total}")
 
     # Elapsed time
@@ -503,11 +536,22 @@ def get_user_selections():
     console.print(
         create_question_box(
             "Step 1: Ticker Symbol",
-            "Enter the exact ticker symbol to analyze, including exchange suffix when needed (examples: SPY, CNC.TO, 7203.T, 0700.HK)",
+            "Enter a ticker or a comma-separated ticker universe (examples: SPY or SPY,QQQ,TSLA)",
             "SPY",
         )
     )
     selected_ticker = get_ticker()
+    universe = parse_ticker_universe(selected_ticker)
+
+    top_n = 1
+    if len(universe) > 1:
+        console.print(
+            create_question_box(
+                "Step 1b: Quant Prefilter",
+                "How many top-ranked tickers should proceed to the LLM graph?"
+            )
+        )
+        top_n = get_top_n(default=min(5, len(universe)), max_value=len(universe))
 
     # Step 2a: Trading style
     console.print(
@@ -620,6 +664,8 @@ def get_user_selections():
 
     return {
         "ticker": selected_ticker,
+        "tickers": universe,
+        "top_n": top_n,
         "analysis_date": analysis_date,
         "analysts": selected_analysts,
         "research_depth": selected_research_depth,
@@ -639,6 +685,116 @@ def get_user_selections():
 def get_ticker():
     """Get ticker symbol from user input."""
     return typer.prompt("", default="SPY")
+
+
+def parse_ticker_universe(raw: str):
+    """Parse comma-separated tickers and normalize while preserving order."""
+    tickers = []
+    seen = set()
+    for token in raw.split(","):
+        symbol = token.strip().upper()
+        if symbol and symbol not in seen:
+            tickers.append(symbol)
+            seen.add(symbol)
+    return tickers
+
+
+def get_top_n(default: int, max_value: int) -> int:
+    """Prompt for top-N value constrained by universe size."""
+    while True:
+        value = typer.prompt("", default=default)
+        try:
+            top_n = int(value)
+            if top_n < 1:
+                console.print("[red]Error: top-N must be at least 1[/red]")
+                continue
+            if top_n > max_value:
+                console.print(f"[red]Error: top-N cannot exceed universe size ({max_value})[/red]")
+                continue
+            return top_n
+        except ValueError:
+            console.print("[red]Error: Please enter an integer value[/red]")
+
+
+def run_prefiltered_universe_analysis(selections, graph):
+    """Quant-rank the universe and run the LLM graph only for top-N tickers."""
+    tickers = selections["tickers"]
+    top_n = selections["top_n"]
+    analysis_date = selections["analysis_date"]
+
+    console.print(
+        f"\n[cyan]Running quant prefilter for {len(tickers)} tickers and selecting top {top_n}...[/cyan]"
+    )
+
+    result = graph.propagate_prefiltered_universe(
+        tickers=tickers,
+        trade_date=analysis_date,
+        top_n=top_n,
+        cache_ttl_days=selections.get("quant_cache_ttl_days"),
+        refresh_cache=selections.get("refresh_quant_cache", False),
+    )
+    prefilter = result["prefilter"]
+    analysis = result["analysis"]
+    selected = prefilter["selected"]
+
+    if not selected:
+        console.print("[red]No tickers qualified in quant prefilter. Nothing to analyze.[/red]")
+        return
+
+    rank_table = Table(title="Quant Prefilter Ranking", box=box.SIMPLE_HEAVY)
+    rank_table.add_column("Ticker", style="cyan")
+    rank_table.add_column("Score", justify="right")
+    rank_table.add_column("Signal", justify="center")
+    rank_table.add_column("Selected", justify="center")
+
+    selected_symbols = {item["symbol"] for item in selected}
+    cache_dir = str(Path(graph.config["data_cache_dir"]) / "quant_prefilter")
+    cache_hits = sum(1 for item in prefilter["ranked"] if item.get("cache_hit"))
+    console.print(
+        f"[dim]Quant cache hits: {cache_hits}/{len(prefilter['ranked'])} (cache: {cache_dir})[/dim]"
+    )
+    for item in prefilter["ranked"]:
+        rank_table.add_row(
+            item["symbol"],
+            f"{item['score']:.2f}" if item["score"] != float("-inf") else "-",
+            str(item.get("signal", "unknown")).upper(),
+            "YES" if item["symbol"] in selected_symbols else "NO",
+        )
+
+    console.print(rank_table)
+
+    summary_table = Table(title="LLM Graph Decisions (Top-N)", box=box.SIMPLE_HEAVY)
+    summary_table.add_column("Ticker", style="cyan")
+    summary_table.add_column("Quant Score", justify="right")
+    summary_table.add_column("Quant Signal", justify="center")
+    summary_table.add_column("Decision", justify="center")
+    summary_table.add_column("Blocked", justify="center")
+
+    for item in selected:
+        symbol = item["symbol"]
+        sym_result = analysis.get(symbol, {})
+        order_intent = sym_result.get("order_intent", {})
+        rating = order_intent.get("rating", "UNKNOWN")
+        blocked = order_intent.get("blocked", False)
+        blocked_display = "[red]YES[/red]" if blocked else "[green]NO[/green]"
+        rating_display = f"[dim]{rating}[/dim]" if blocked else str(rating).upper()
+
+        summary_table.add_row(
+            symbol,
+            f"{item['score']:.2f}",
+            str(item.get("signal", "unknown")).upper(),
+            rating_display,
+            blocked_display,
+        )
+
+        final_state = sym_result.get("final_state")
+        if final_state:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = Path.cwd() / "reports" / f"{symbol}_{timestamp}"
+            save_report_to_disk(final_state, symbol, save_path)
+
+    console.print("\n")
+    console.print(summary_table)
 
 
 def get_analysis_date():
@@ -950,7 +1106,12 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(overrides: Optional[dict] = None):
+def run_analysis(
+    overrides: Optional[dict] = None,
+    refresh_quant_cache: bool = False,
+    quant_cache_ttl_days: int = 1,
+    execution_mode: str = "llm_assisted",
+):
     # First get all user selections
     selections = get_user_selections()
     if overrides:
@@ -971,10 +1132,24 @@ def run_analysis(overrides: Optional[dict] = None):
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
-    # Trading style + intraday config
+
+    # Trading style + intraday config (from claude/add-day-trading-features-GSpm1)
     config["trading_style"] = selections.get("trading_style", "swing")
     if selections.get("intraday_interval"):
         config["intraday_interval"] = selections["intraday_interval"]
+
+    # Quant prefilter + execution mode (from feature/quant)
+    normalized_mode = parse_execution_mode(execution_mode)
+    if normalized_mode != execution_mode.strip().lower():
+        console.print(
+            f"[yellow]Warning: unknown execution_mode '{execution_mode}', defaulting to '{normalized_mode}'[/yellow]"
+        )
+    config["execution_mode"] = normalized_mode
+    config["quant_prefilter_refresh_cache"] = refresh_quant_cache
+    config["quant_prefilter_cache_ttl_days"] = quant_cache_ttl_days
+
+    selections["refresh_quant_cache"] = refresh_quant_cache
+    selections["quant_cache_ttl_days"] = quant_cache_ttl_days
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -990,6 +1165,11 @@ def run_analysis(overrides: Optional[dict] = None):
         debug=True,
         callbacks=[stats_handler],
     )
+
+    # Universe mode: quant prefilter first, then run LLM graph for top-N only.
+    if len(selections["tickers"]) > 1:
+        run_prefiltered_universe_analysis(selections, graph)
+        return
 
     # Initialize message buffer with selected analysts
     message_buffer.init_for_analysis(selected_analyst_keys)
@@ -1185,7 +1365,11 @@ def run_analysis(overrides: Optional[dict] = None):
 
         # Get final state and decision
         final_state = trace[-1]
-        decision = graph.process_signal(final_state["final_trade_decision"])
+        decision = graph.build_order_intent(
+            selections["ticker"],
+            selections["analysis_date"],
+            final_state["final_trade_decision"],
+        )["rating"]
 
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:
@@ -1230,6 +1414,7 @@ def run_analysis(overrides: Optional[dict] = None):
 
 @app.command()
 def analyze(
+    # Daytrade flags (from claude/add-day-trading-features-GSpm1)
     trading_style: Optional[str] = typer.Option(
         None, "--trading-style", "-s",
         help="swing | daytrade. Overrides interactive prompt.",
@@ -1242,6 +1427,22 @@ def analyze(
         None, "--datetime", "-d",
         help="Analysis moment (YYYY-MM-DD or ISO 8601). Overrides interactive prompt.",
     ),
+    # Quant flags (from feature/quant)
+    execution_mode: str = typer.Option(
+        "llm_assisted",
+        "--execution-mode",
+        help="Execution mode: llm_assisted or quant_strict.",
+    ),
+    refresh_quant_cache: bool = typer.Option(
+        False,
+        "--refresh-quant-cache",
+        help="Force recompute quant prefilter signals and bypass cache.",
+    ),
+    quant_cache_ttl_days: int = typer.Option(
+        1,
+        "--quant-cache-ttl-days",
+        help="Quant prefilter cache TTL in days (0 = only entries saved now, negative disables age expiry).",
+    ),
 ):
     """Run a single trading analysis. With no flags, prompts interactively."""
     overrides = {
@@ -1249,7 +1450,12 @@ def analyze(
         "intraday_interval": interval,
         "analysis_date": when,
     }
-    run_analysis(overrides={k: v for k, v in overrides.items() if v is not None} or None)
+    run_analysis(
+        overrides={k: v for k, v in overrides.items() if v is not None} or None,
+        execution_mode=execution_mode,
+        refresh_quant_cache=refresh_quant_cache,
+        quant_cache_ttl_days=quant_cache_ttl_days,
+    )
 
 
 if __name__ == "__main__":

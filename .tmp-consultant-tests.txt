@@ -1,0 +1,35 @@
+test_archived_consultant_route_uses_runnable_llm_from_client_wrapper (tests.test_web_api.ConsultantChatTests.test_archived_consultant_route_uses_runnable_llm_from_client_wrapper) ... ok
+test_blocking_field_stripped (tests.test_web_api.ConsultantChatTests.test_blocking_field_stripped) ... ok
+test_consultant_route_uses_runnable_llm_from_client_wrapper (tests.test_web_api.ConsultantChatTests.test_consultant_route_uses_runnable_llm_from_client_wrapper) ... ok
+test_no_context_returns_409 (tests.test_web_api.ConsultantChatTests.test_no_context_returns_409) ... ok
+test_unknown_run_returns_404 (tests.test_web_api.ConsultantChatTests.test_unknown_run_returns_404) ... ok
+test_bad_date_format_returns_422 (tests.test_web_api.CreateAnalysisTests.test_bad_date_format_returns_422) ... ok
+test_exchange_suffix_tickers_accepted (tests.test_web_api.CreateAnalysisTests.test_exchange_suffix_tickers_accepted) ... ok
+test_invalid_execution_mode_returns_422 (tests.test_web_api.CreateAnalysisTests.test_invalid_execution_mode_returns_422) ... ok
+test_missing_date_returns_422 (tests.test_web_api.CreateAnalysisTests.test_missing_date_returns_422) ... ok
+test_missing_ticker_returns_422 (tests.test_web_api.CreateAnalysisTests.test_missing_ticker_returns_422) ... ok
+test_unknown_analyst_returns_422 (tests.test_web_api.CreateAnalysisTests.test_unknown_analyst_returns_422) ... ok
+test_valid_request_returns_run_id (tests.test_web_api.CreateAnalysisTests.test_valid_request_returns_run_id) ... ok
+test_get_archived_run_hydrates_from_disk (tests.test_web_api.GetAnalysisTests.test_get_archived_run_hydrates_from_disk) ... ok
+test_get_existing_run (tests.test_web_api.GetAnalysisTests.test_get_existing_run) ... ok
+test_get_unknown_run_returns_404 (tests.test_web_api.GetAnalysisTests.test_get_unknown_run_returns_404) ... ok
+test_reports_empty_before_run_completes (tests.test_web_api.GetReportsTests.test_reports_empty_before_run_completes) ... ok
+test_unknown_run_returns_404 (tests.test_web_api.GetReportsTests.test_unknown_run_returns_404) ... ok
+test_list_archives_returns_saved_runs_newest_first (tests.test_web_api.ListAnalysisArchivesTests.test_list_archives_returns_saved_runs_newest_first) ... ok
+test_get_models_marks_custom_model_providers (tests.test_web_api.ModelCatalogTests.test_get_models_marks_custom_model_providers) ... ok
+test_get_models_returns_provider_specific_options (tests.test_web_api.ModelCatalogTests.test_get_models_returns_provider_specific_options) ... ok
+test_trade_review_contains_provider_failure_without_blocking (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_contains_provider_failure_without_blocking) ... ok
+test_trade_review_ignores_executable_fields_and_preserves_inputs (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_ignores_executable_fields_and_preserves_inputs) ... ok
+test_trade_review_prompt_includes_context_and_messages (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_prompt_includes_context_and_messages) ... ok
+test_trade_review_referenced_context_keys_are_limited_to_provided_context (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_referenced_context_keys_are_limited_to_provided_context) ... ok
+test_trade_review_rejects_malformed_response_without_blocking (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_rejects_malformed_response_without_blocking) ... ok
+test_trade_review_returns_structured_advisory_response (tests.test_trade_review_consultant.TradeReviewConsultantTests.test_trade_review_returns_structured_advisory_response) ... ok
+test_base_client_invoke_proxies_to_underlying_llm (tests.test_model_validation.ModelValidationTests.test_base_client_invoke_proxies_to_underlying_llm) ... ok
+test_cli_catalog_models_are_all_validator_approved (tests.test_model_validation.ModelValidationTests.test_cli_catalog_models_are_all_validator_approved) ... ok
+test_openrouter_and_ollama_accept_custom_models_without_warning (tests.test_model_validation.ModelValidationTests.test_openrouter_and_ollama_accept_custom_models_without_warning) ... ok
+test_unknown_model_emits_warning_for_strict_provider (tests.test_model_validation.ModelValidationTests.test_unknown_model_emits_warning_for_strict_provider) ... ok
+
+----------------------------------------------------------------------
+Ran 30 tests in 0.114s
+
+OK
