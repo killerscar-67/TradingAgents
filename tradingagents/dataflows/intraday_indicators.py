@@ -39,6 +39,11 @@ SUPPORTED_INTRADAY_INDICATORS = {
     "keltner_upper": "Keltner channel upper (EMA20 + 2*ATR14).",
     "keltner_lower": "Keltner channel lower (EMA20 - 2*ATR14).",
     "session_atr": "ATR(14) computed on the current session's bars only.",
+    "gap_percent": (
+        "Today's RTH open vs prior session's close, in percent. "
+        ">+1% gap up or <-1% gap down typically warrants different playbooks "
+        "(gap-and-go vs gap-fill). Returns null if today's open or prior close is missing."
+    ),
 }
 
 
@@ -197,6 +202,31 @@ def keltner_channels(df: pd.DataFrame, ema_period: int = 20, atr_period: int = 1
     return float(ema.iloc[-1] + mult * atr.iloc[-1]), float(ema.iloc[-1] - mult * atr.iloc[-1])
 
 
+def gap_percent(df: pd.DataFrame, session_date: str) -> Optional[float]:
+    """Today's RTH open vs prior session's RTH close, expressed as percent.
+
+    Requires at least one prior session of bars. Returns None when today's
+    opening bar or the prior session's closing bar is missing.
+    """
+    df = _ensure_session_tz(df)
+    today = _filter_to_session(df, session_date, rth_only=True)
+    if today.empty:
+        return None
+    today_open = float(today["Open"].iloc[0])
+
+    prior_sessions = sorted(d for d in df["SessionDate"].unique()
+                            if d < pd.to_datetime(session_date).date())
+    if not prior_sessions:
+        return None
+    prior = _filter_to_session(df, prior_sessions[-1].isoformat(), rth_only=True)
+    if prior.empty:
+        return None
+    prior_close = float(prior["Close"].iloc[-1])
+    if prior_close == 0:
+        return None
+    return (today_open - prior_close) / prior_close * 100.0
+
+
 def session_atr(df: pd.DataFrame, session_date: str, period: int = 14) -> Optional[float]:
     df = _ensure_session_tz(df)
     s = _filter_to_session(df, session_date, rth_only=True)
@@ -278,6 +308,8 @@ def get_intraday_indicators_window(
         val = None if out is None else out[1]
     elif indicator == "session_atr":
         val = session_atr(df, end_date)
+    elif indicator == "gap_percent":
+        val = gap_percent(df, end_date)
 
     if val is None:
         rendered = "N/A: insufficient data"

@@ -25,6 +25,7 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.intraday_tools import (
     get_intraday_indicators,
     get_intraday_stock_data,
+    get_session_context,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -41,7 +42,10 @@ high-quality intraday setup using the tools available, or explicitly call no-tra
 You may use ONLY these intraday indicators: vwap, orb_high_5, orb_low_5,
 orb_high_15, orb_low_15, orb_high_30, orb_low_30, rel_volume, fast_rsi_7,
 fast_stoch_k, fast_stoch_d, fast_macd, fast_macd_signal, fast_macd_hist,
-keltner_upper, keltner_lower, session_atr.
+keltner_upper, keltner_lower, session_atr, gap_percent.
+
+You may also call get_session_context(when) to confirm the session phase,
+minutes-to-close, and the data session date if uncertain.
 
 DO NOT reference 50/200 SMA, quarterly fundamentals, or any horizon longer
 than the current session. Those signals do not move 5-minute bars.
@@ -142,7 +146,7 @@ def create_intraday_market_analyst(llm):
         minutes_left = state.get("minutes_to_close", 0)
         requested_dt = state.get("trade_datetime") or state.get("trade_date")
 
-        tools = [get_intraday_stock_data, get_intraday_indicators]
+        tools = [get_intraday_stock_data, get_intraday_indicators, get_session_context]
 
         decisions: List[Dict[str, Any]] = []
         primary_report = ""

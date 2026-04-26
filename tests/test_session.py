@@ -87,5 +87,21 @@ class SessionContextTests(unittest.TestCase):
                          {"trade_datetime", "session_phase", "minutes_to_close", "data_session_date"})
 
 
+class SessionContextToolTests(unittest.TestCase):
+    def test_tool_returns_inside_rth_context(self):
+        from tradingagents.agents.utils.intraday_tools import get_session_context
+        # `.invoke` is the canonical way to call a LangChain @tool by API.
+        result = get_session_context.invoke({"when": "2025-04-24T10:30:00-04:00"})
+        self.assertIn("Session phase: morning", result)
+        self.assertIn("Walked back to prior session: False", result)
+
+    def test_tool_walks_back_outside_rth(self):
+        from tradingagents.agents.utils.intraday_tools import get_session_context
+        result = get_session_context.invoke({"when": "2025-04-26T12:00:00-04:00"})
+        # Saturday → walks back to Friday 2025-04-25.
+        self.assertIn("Walked back to prior session: True", result)
+        self.assertIn("2025-04-25", result)
+
+
 if __name__ == "__main__":
     unittest.main()

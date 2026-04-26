@@ -11,6 +11,33 @@ from typing import Annotated
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.session import resolve_session_context
+
+
+@tool
+def get_session_context(
+    when: Annotated[str, "ISO 8601 datetime (e.g. 2025-04-24T10:30:00-04:00) or YYYY-MM-DD"],
+) -> str:
+    """
+    Resolve the trading-session context for a given moment.
+
+    Returns the session phase (premarket/morning/midday/power_hour/close/postmarket/closed),
+    minutes remaining until 16:00 ET, and the date whose bars should be used
+    (walks back to the prior business day when called outside RTH).
+    """
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(when)
+    except ValueError:
+        dt = datetime.strptime(when, "%Y-%m-%d")
+    ctx = resolve_session_context(dt)
+    return (
+        f"Requested moment: {ctx.requested_dt.isoformat()}\n"
+        f"Session phase: {ctx.session_phase}\n"
+        f"Minutes to close: {ctx.minutes_to_close}\n"
+        f"Data session date: {ctx.data_session_date}\n"
+        f"Walked back to prior session: {ctx.walked_back}"
+    )
 
 
 @tool

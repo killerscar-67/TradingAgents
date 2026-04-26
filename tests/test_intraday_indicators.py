@@ -11,6 +11,7 @@ from tradingagents.dataflows.intraday_indicators import (
     fast_macd,
     fast_rsi,
     fast_stochastic,
+    gap_percent,
     keltner_channels,
     opening_range,
     relative_volume,
@@ -128,6 +129,33 @@ class SessionATRTests(unittest.TestCase):
         atr = session_atr(df, "2025-04-24")
         self.assertIsNotNone(atr)
         self.assertGreater(atr, 0)
+
+
+class GapPercentTests(unittest.TestCase):
+    def test_gap_none_without_prior_session(self):
+        df = _bars("2025-04-24", n=10)
+        self.assertIsNone(gap_percent(df, "2025-04-24"))
+
+    def test_gap_up(self):
+        # Yesterday closes near 100, today opens near 102 → ~2% gap up.
+        prior = _bars("2025-04-23", n=10, base=100.0)
+        # _bars closes drift up from base; pin today's open precisely.
+        today = _bars("2025-04-24", n=10, base=102.0)
+        df = pd.concat([prior, today], ignore_index=True)
+        gp = gap_percent(df, "2025-04-24")
+        self.assertIsNotNone(gp)
+        # Prior close = 100 + 9*0.10 = 100.90; today open (Open = base - 0.05 = 101.95)
+        # gap = (101.95 - 100.90) / 100.90 * 100 ≈ 1.04
+        self.assertGreater(gp, 0.5)
+        self.assertLess(gp, 2.0)
+
+    def test_gap_down(self):
+        prior = _bars("2025-04-23", n=10, base=100.0)
+        today = _bars("2025-04-24", n=10, base=98.0)
+        df = pd.concat([prior, today], ignore_index=True)
+        gp = gap_percent(df, "2025-04-24")
+        self.assertIsNotNone(gp)
+        self.assertLess(gp, 0)
 
 
 if __name__ == "__main__":

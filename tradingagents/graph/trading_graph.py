@@ -35,6 +35,7 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.intraday_tools import (
     get_intraday_stock_data,
     get_intraday_indicators,
+    get_session_context,
 )
 
 from tradingagents.journal import Journal
@@ -191,6 +192,7 @@ class TradingAgentsGraph:
                 [
                     get_intraday_stock_data,
                     get_intraday_indicators,
+                    get_session_context,
                 ]
             ),
             "social": ToolNode(
