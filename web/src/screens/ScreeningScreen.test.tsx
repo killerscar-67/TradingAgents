@@ -23,6 +23,17 @@ function stubFetch() {
   return mock;
 }
 
+function stubFetchWithResponse(response: { run_id: string; status: string; results: unknown[] }) {
+  const mock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === "/api/screening/runs" && init?.method === "POST") {
+      return { ok: true, json: async () => response };
+    }
+    return { ok: false, json: async () => ({}) };
+  });
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
 function renderScreen() {
   return render(
     <WorkflowProvider>
@@ -89,9 +100,55 @@ describe("ScreeningScreen", () => {
       expect(mock).toHaveBeenCalledWith(
         "/api/screening/runs",
         expect.objectContaining({
-          body: expect.stringContaining('"home_market":"HK"'),
+          body: expect.stringContaining('"universe":"HK"'),
         })
       )
     );
+    const body = JSON.parse(String(mock.mock.calls[0][1]?.body));
+    expect(body.strategy).toBe("breakout");
+    expect(body).not.toHaveProperty("home_market");
+  });
+
+  it("posts the backend screening contract fields", async () => {
+    const mock = stubFetch();
+    renderScreen();
+    fireEvent.change(screen.getByLabelText(/universe/i), { target: { value: "HK" } });
+    fireEvent.change(screen.getByLabelText(/max results/i), { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: /run screen/i }));
+
+    await waitFor(() => expect(mock).toHaveBeenCalled());
+    const body = JSON.parse(String(mock.mock.calls[0][1]?.body));
+    expect(body).toMatchObject({
+      universe: "HK",
+      top_n: 7,
+      min_score: 0.6,
+      strategy: "auto",
+    });
+    expect(body).not.toHaveProperty("home_market");
+    expect(body).not.toHaveProperty("max_results");
+  });
+
+  it("renders backend-shaped screening results", async () => {
+    stubFetchWithResponse({
+      run_id: "scr-002",
+      status: "completed",
+      results: [
+        {
+          symbol: "NVDA",
+          score: 0.921,
+          confidence: 0.88,
+          signal: "buy",
+          last_price: 875.23,
+          suggested_entry_mode: "breakout",
+          regime: { label: "Trending bull" },
+        },
+      ],
+    });
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: /run screen/i }));
+
+    await waitFor(() => expect(screen.getByText("NVDA")).toBeInTheDocument());
+    expect(screen.getByText("Trending bull")).toBeInTheDocument();
+    expect(screen.getByText("breakout")).toBeInTheDocument();
   });
 });

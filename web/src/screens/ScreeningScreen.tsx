@@ -4,6 +4,18 @@ import { InheritedChip } from "../components/InheritedChip";
 import type { ScreeningResult, BasketData } from "../types";
 import styles from "./ScreeningScreen.module.css";
 
+function getResultEntryMode(result: ScreeningResult): string {
+  return result.suggested_entry_mode ?? result.entry_mode ?? "auto";
+}
+
+function getResultRegimeLabel(result: ScreeningResult): string {
+  return result.regime?.label ?? result.regime_label ?? "Unknown";
+}
+
+function getResultSignal(result: ScreeningResult): string {
+  return result.signal ?? result.status ?? "";
+}
+
 export function ScreeningScreen() {
   const { regime, setBasket, setScreen, autoAdvance } = useWorkflow();
   const [results, setResults] = useState<ScreeningResult[]>([]);
@@ -24,7 +36,7 @@ export function ScreeningScreen() {
 
   const displayedResults = useMemo(() => {
     if (strategyFilter === "all") return results;
-    return results.filter((result) => result.entry_mode.toLowerCase() === strategyFilter);
+    return results.filter((result) => getResultEntryMode(result).toLowerCase() === strategyFilter);
   }, [results, strategyFilter]);
 
   const selectedDisplayedCount = displayedResults.filter((result) => selectedSymbols.has(result.symbol)).length;
@@ -39,9 +51,10 @@ export function ScreeningScreen() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          home_market: universe,
+          universe,
+          strategy: strategyFilter === "all" ? "auto" : strategyFilter,
           min_score: minScore,
-          max_results: maxResults,
+          top_n: maxResults,
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -257,6 +270,7 @@ export function ScreeningScreen() {
                   <th className={styles.th}>Score</th>
                   <th className={styles.th}>Regime</th>
                   <th className={styles.th}>Entry mode</th>
+                  <th className={styles.th}>Signal</th>
                   <th className={styles.th}></th>
                 </tr>
               </thead>
@@ -273,8 +287,9 @@ export function ScreeningScreen() {
                     </td>
                     <td className={styles.td + " " + styles.symbol}>{r.symbol}</td>
                     <td className={styles.td}>{r.score.toFixed(2)}</td>
-                    <td className={styles.td}>{r.regime_label}</td>
-                    <td className={styles.td}>{r.entry_mode}</td>
+                    <td className={styles.td}>{getResultRegimeLabel(r)}</td>
+                    <td className={styles.td}>{getResultEntryMode(r)}</td>
+                    <td className={styles.td}>{getResultSignal(r)}</td>
                     <td className={styles.td}>
                       <button
                         className={styles.removeBtn}

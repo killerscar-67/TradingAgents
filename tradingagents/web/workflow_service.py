@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import logging
 import threading
+import calendar
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -25,6 +27,7 @@ from tradingagents.web import runner
 _cancelled_batches: set = set()
 _cancelled_lock = threading.Lock()
 _thread_cls = threading.Thread  # test-injectable; patching threading.Thread globally breaks anyio
+_LOGGER = logging.getLogger(__name__)
 
 
 def cancel_batch(batch_id: str) -> None:
@@ -656,6 +659,75 @@ def _fetch_calendar_events(provider: str, regions: Iterable[str], start_date: st
     return records
 
 
+def _fetch_finance_calendar_events(provider: str, symbols: Iterable[str], start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    normalized_provider = str(provider or "finnhub").lower()
+    allowed = {symbol.upper() for symbol in symbols}
+
+    if normalized_provider == "fmp":
+        api_key = os.getenv("FMP_API_KEY", "").strip()
+        if not api_key:
+            return []
+        params = urlencode({"from": start_date, "to": end_date, "apikey": api_key})
+        url = f"https://financialmodelingprep.com/stable/earnings-calendar?{params}"
+        with urlopen(url, timeout=5) as response:
+            payload = response.read().decode("utf-8")
+        data = pd.read_json(payload)
+        if data.empty:
+            return []
+        records: List[Dict[str, Any]] = []
+        for row in data.to_dict(orient="records"):
+            symbol = str(row.get("symbol", "")).upper()
+            if symbol not in allowed:
+                continue
+            raw_date = row.get("date")
+            if raw_date is None:
+                continue
+            records.append(
+                {
+                    "date": str(raw_date)[:10],
+                    "symbol": symbol,
+                    "name": "Earnings",
+                    "event_type": "earnings",
+                }
+            )
+        return records
+
+    if normalized_provider != "finnhub":
+        return []
+
+    api_key = os.getenv("FINNHUB_API_KEY", "").strip()
+    if not api_key:
+        return []
+    params = urlencode({"from": start_date, "to": end_date, "token": api_key})
+    url = f"https://finnhub.io/api/v1/calendar/earnings?{params}"
+    with urlopen(url, timeout=5) as response:
+        payload = response.read().decode("utf-8")
+    data = pd.read_json(payload)
+    if data.empty:
+        return []
+    calendar_rows = data.to_dict(orient="records")
+    earnings_rows = calendar_rows[0].get("earningsCalendar") if calendar_rows else None
+    if not isinstance(earnings_rows, list):
+        return []
+    records: List[Dict[str, Any]] = []
+    for row in earnings_rows:
+        symbol = str(row.get("symbol", "")).upper()
+        if symbol not in allowed:
+            continue
+        raw_date = row.get("date")
+        if raw_date is None:
+            continue
+        records.append(
+            {
+                "date": str(raw_date)[:10],
+                "symbol": symbol,
+                "name": "Earnings",
+                "event_type": "earnings",
+            }
+        )
+    return records
+
+
 def _normalize_calendar_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for event in events:
@@ -674,13 +746,60 @@ def _normalize_calendar_events(events: Iterable[Dict[str, Any]]) -> List[Dict[st
     return normalized
 
 
-def _calendar_status(provider: str, events: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _normalize_finance_calendar_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for event in events:
+        raw_date = event.get("date") or event.get("timestamp")
+        raw_symbol = event.get("symbol")
+        if not raw_date or not raw_symbol:
+            continue
+        normalized.append(
+            {
+                "date": str(raw_date)[:10],
+                "symbol": str(raw_symbol).upper(),
+                "name": str(event.get("name") or event.get("event_type") or "Earnings"),
+                "event_type": str(event.get("event_type") or "earnings"),
+            }
+        )
+    return normalized
+
+
+def _month_window(as_of_date: str) -> Tuple[str, str]:
+    target = datetime.fromisoformat(as_of_date).date()
+    month_start = target.replace(day=1)
+    previous_month_end = month_start - timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+    current_month_end = target.replace(day=calendar.monthrange(target.year, target.month)[1])
+    next_month_start = current_month_end + timedelta(days=1)
+    next_month_end = next_month_start.replace(day=calendar.monthrange(next_month_start.year, next_month_start.month)[1])
+    return previous_month_start.isoformat(), (next_month_end + timedelta(days=1)).isoformat()
+
+
+def _calendar_status(
+    provider: str,
+    events: List[Dict[str, Any]],
+    *,
+    label: str,
+    empty_message: str,
+    unavailable_message: Optional[str] = None,
+) -> Dict[str, Any]:
     normalized_provider = str(provider or "fmp").lower()
-    if normalized_provider == "fmp" and not os.getenv("FMP_API_KEY", "").strip():
+    if unavailable_message:
         return {
             "provider": normalized_provider,
             "state": "unavailable",
-            "message": "Economic calendar unavailable. Set FMP_API_KEY to load upcoming events.",
+            "message": unavailable_message,
+        }
+    expected_api_key = None
+    if normalized_provider == "fmp":
+        expected_api_key = "FMP_API_KEY"
+    elif normalized_provider == "finnhub":
+        expected_api_key = "FINNHUB_API_KEY"
+    if expected_api_key and not os.getenv(expected_api_key, "").strip():
+        return {
+            "provider": normalized_provider,
+            "state": "unavailable",
+            "message": f"{label} unavailable. Set {expected_api_key} to load upcoming events.",
         }
     if events:
         return {
@@ -691,7 +810,7 @@ def _calendar_status(provider: str, events: List[Dict[str, Any]]) -> Dict[str, A
     return {
         "provider": normalized_provider,
         "state": "empty",
-        "message": "No medium or high impact events scheduled for the selected session.",
+        "message": empty_message,
     }
 
 
@@ -775,17 +894,56 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
         }
 
     calendar_provider = settings.get("calendar_provider", "fmp")
-    events = _normalize_calendar_events(
-        _fetch_calendar_events(
-            calendar_provider,
-            [resolved_market],
-            as_of_date,
-            (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat(),
+    finance_calendar_provider = settings.get("finance_calendar_provider", "finnhub")
+    month_start, month_end = _month_window(as_of_date)
+    calendar_unavailable_message = None
+    finance_calendar_unavailable_message = None
+    try:
+        events = _normalize_calendar_events(
+            _fetch_calendar_events(
+                calendar_provider,
+                [resolved_market],
+                month_start,
+                month_end,
+            )
         )
+    except Exception as exc:
+        _LOGGER.warning("Economic calendar unavailable: %s", exc)
+        events = []
+        calendar_unavailable_message = f"Economic calendar unavailable. {exc}"
+
+    try:
+        finance_events = _normalize_finance_calendar_events(
+            _fetch_finance_calendar_events(
+                finance_calendar_provider,
+                MARKET_DEFINITIONS[resolved_market]["universe"],
+                month_start,
+                month_end,
+            )
+        )
+    except Exception as exc:
+        _LOGGER.warning("Financial calendar unavailable: %s", exc)
+        finance_events = []
+        finance_calendar_unavailable_message = f"Financial calendar unavailable. {exc}"
+
+    calendar_status = _calendar_status(
+        str(calendar_provider),
+        events,
+        label="Economic calendar",
+        empty_message="No medium or high impact events scheduled this month.",
+        unavailable_message=calendar_unavailable_message,
     )
-    calendar_status = _calendar_status(str(calendar_provider), events)
+    finance_calendar_status = _calendar_status(
+        str(finance_calendar_provider),
+        finance_events,
+        label="Financial calendar",
+        empty_message="No upcoming earnings found for the representative market basket this month.",
+        unavailable_message=finance_calendar_unavailable_message,
+    )
     home_payload = region_payloads[resolved_market]
-    home_payload["regime"]["event_risk_flag"] = any(event.get("impact") == "high" for event in events)
+    home_payload["regime"]["event_risk_flag"] = any(
+        event.get("impact") == "high" and event.get("date") == as_of_date for event in events
+    )
 
     regions = {
         region: {
@@ -804,6 +962,8 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
         "sectors": home_payload["sectors"],
         "events": events,
         "calendar_status": calendar_status,
+        "finance_events": finance_events,
+        "finance_calendar_status": finance_calendar_status,
         "regions": regions,
         "stream": {
             "status": settings.get("live_quote_mode", "delayed_fallback"),

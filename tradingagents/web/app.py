@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,11 @@ from tradingagents.web.routes.models import router as models_router
 from tradingagents.web.routes.workflow import router as workflow_router
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent / "web" / "dist"
+
+
+# Mirror CLI startup so uvicorn-loaded web processes see keys from .env.
+load_dotenv()
+load_dotenv(".env.enterprise", override=False)
 
 
 def create_app() -> FastAPI:

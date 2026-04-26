@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError, URLError
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -188,9 +189,12 @@ class WorkflowContractTests(unittest.TestCase):
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
             "tradingagents.web.workflow_service._fetch_calendar_events",
             return_value=[{"timestamp": "2026-04-23T14:00:00Z", "title": "FOMC Minutes", "impact": "high", "region": "US"}],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[{"date": "2026-04-30", "symbol": "AAPL", "name": "Earnings", "event_type": "earnings"}],
         ), patch.dict(
             os.environ,
-            {"FMP_API_KEY": "test-key"},
+            {"FMP_API_KEY": "test-key", "FINNHUB_API_KEY": "test-key"},
             clear=False,
         ):
             resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
@@ -203,10 +207,15 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["events"][0]["date"], "2026-04-23")
         self.assertEqual(body["events"][0]["name"], "FOMC Minutes")
         self.assertEqual(body["calendar_status"]["state"], "ready")
+        self.assertEqual(body["finance_events"][0]["symbol"], "AAPL")
+        self.assertEqual(body["finance_calendar_status"]["state"], "ready")
         self.assertIn("HK", body["regions"])
 
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download_risk_off), patch(
             "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
             return_value=[],
         ):
             risk_off = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
@@ -217,7 +226,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_market_overview_marks_calendar_unavailable_without_fmp_key(self):
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch.dict(
             os.environ,
-            {"FMP_API_KEY": ""},
+            {"FMP_API_KEY": "", "FINNHUB_API_KEY": ""},
             clear=False,
         ):
             resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
@@ -227,6 +236,52 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["events"], [])
         self.assertEqual(body["calendar_status"]["state"], "unavailable")
         self.assertIn("FMP_API_KEY", body["calendar_status"]["message"])
+        self.assertEqual(body["finance_events"], [])
+        self.assertEqual(body["finance_calendar_status"]["state"], "unavailable")
+        self.assertIn("FINNHUB_API_KEY", body["finance_calendar_status"]["message"])
+
+    def test_market_overview_tolerates_finance_calendar_provider_errors(self):
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[{"timestamp": "2026-04-23T14:00:00Z", "title": "FOMC Minutes", "impact": "high", "region": "US"}],
+        ), patch(
+            "tradingagents.web.workflow_service.urlopen",
+            side_effect=lambda url, timeout=5: (_ for _ in ()).throw(HTTPError(url, 402, "Payment Required", hdrs=None, fp=None))
+            if "finnhub.io/api/v1/calendar/earnings" in url
+            else (_ for _ in ()).throw(AssertionError("unexpected direct urlopen call")),
+        ), patch.dict(
+            os.environ,
+            {"FMP_API_KEY": "test-key", "FINNHUB_API_KEY": "test-key"},
+            clear=False,
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["events"][0]["name"], "FOMC Minutes")
+        self.assertEqual(body["finance_events"], [])
+        self.assertEqual(body["finance_calendar_status"]["state"], "unavailable")
+        self.assertIn("Financial calendar unavailable", body["finance_calendar_status"]["message"])
+
+    def test_market_overview_tolerates_economic_calendar_provider_errors(self):
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            side_effect=URLError("temporary outage"),
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[],
+        ), patch.dict(
+            os.environ,
+            {"FMP_API_KEY": "test-key"},
+            clear=False,
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["events"], [])
+        self.assertEqual(body["calendar_status"]["state"], "unavailable")
+        self.assertIn("Economic calendar unavailable", body["calendar_status"]["message"])
 
     def test_market_overview_accepts_yfinance_multiindex_history(self):
         def mock_multiindex_download(symbols, start, end):
@@ -238,6 +293,9 @@ class WorkflowContractTests(unittest.TestCase):
 
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=mock_multiindex_download), patch(
             "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
             return_value=[],
         ):
             resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
@@ -256,6 +314,9 @@ class WorkflowContractTests(unittest.TestCase):
 
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=mock_download), patch(
             "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
             return_value=[],
         ):
             resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
@@ -412,6 +473,41 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(len(basket_body["items"]), 2)
         self.assertEqual(basket_body["items"][0]["symbol"], "AAPL")
         self.assertEqual(basket_body["workflow_session_id"], body["workflow_session_id"])
+
+    def test_screening_tolerates_finance_calendar_provider_errors(self):
+        def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
+            return self._quant_contract(symbol, 0.92, "buy", f"{symbol} breakout")
+
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            side_effect=HTTPError("https://example.test", 500, "Internal Server Error", hdrs=None, fp=None),
+        ), patch(
+            "tradingagents.web.workflow_service.get_intraday_bars",
+            return_value=_make_intraday_bars(),
+        ), patch("tradingagents.quant.engine.run_quant_engine", side_effect=fake_quant), patch.dict(
+            os.environ,
+            {"FMP_API_KEY": "test-key"},
+            clear=False,
+        ):
+            screening = self.client.post(
+                "/api/screening/runs",
+                json={
+                    "universe": "CUSTOM",
+                    "strategy": "auto",
+                    "trade_date": "2026-04-23",
+                    "top_n": 2,
+                    "min_score": 0.5,
+                    "custom_symbols": ["AAPL"],
+                },
+            )
+
+        self.assertEqual(screening.status_code, 200)
+        body = screening.json()
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual([item["symbol"] for item in body["results"]], ["AAPL"])
 
     def test_batch_strategy_stage_and_history_flow(self):
         run_counter = {"value": 0}

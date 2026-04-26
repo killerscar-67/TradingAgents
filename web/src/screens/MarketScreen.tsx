@@ -17,6 +17,26 @@ interface CalendarEvent {
   impact: string;
 }
 
+interface FinanceCalendarEvent {
+  date: string;
+  symbol: string;
+  name: string;
+  event_type: string;
+}
+
+interface CalendarDayEvent {
+  id: string;
+  label: string;
+  meta: string;
+  tone: "macroHigh" | "macroMedium" | "finance";
+}
+
+interface CalendarCell {
+  key: string;
+  dayNumber: number | null;
+  events: CalendarDayEvent[];
+}
+
 type ChartInterval = "15m" | "4h" | "1D" | "1W" | "1M";
 
 interface ChartPayload {
@@ -40,6 +60,63 @@ const CHART_INITIAL_VISIBLE_BARS: Record<ChartInterval, number> = {
   "1W": 52,
   "1M": 24,
 };
+
+function monthLabelFromIso(value: string): string {
+  const [year, month] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function monthKeyFromIso(value: string): string {
+  return value.slice(0, 7);
+}
+
+function shiftMonth(value: string, delta: number): string {
+  const [year, month] = value.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1 + delta, 1));
+  return shifted.toISOString().slice(0, 7);
+}
+
+function buildMonthlyCalendar(value: string, events: CalendarDayEvent[]): { label: string; weeks: CalendarCell[][] } {
+  const [year, month] = value.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const eventsByDate = new Map<string, CalendarDayEvent[]>();
+
+  for (const event of events) {
+    const bucket = eventsByDate.get(event.id.split("::")[0]) ?? [];
+    bucket.push(event);
+    eventsByDate.set(event.id.split("::")[0], bucket);
+  }
+
+  const cells: CalendarCell[] = [];
+  for (let index = 0; index < firstWeekday; index += 1) {
+    cells.push({ key: `empty-start-${index}`, dayNumber: null, events: [] });
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateKey = `${value.slice(0, 7)}-${String(day).padStart(2, "0")}`;
+    cells.push({
+      key: dateKey,
+      dayNumber: day,
+      events: (eventsByDate.get(dateKey) ?? []).slice(0, 3),
+    });
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push({ key: `empty-end-${cells.length}`, dayNumber: null, events: [] });
+  }
+
+  const weeks: CalendarCell[][] = [];
+  for (let index = 0; index < cells.length; index += 7) {
+    weeks.push(cells.slice(index, index + 7));
+  }
+
+  return { label: monthLabelFromIso(value), weeks };
+}
 
 function isIntradayInterval(interval: ChartInterval): boolean {
   return interval === "15m" || interval === "4h";
@@ -98,6 +175,51 @@ export function MarketScreen() {
     ["H", "M", "HIGH", "MEDIUM"].includes(String(event.impact).toUpperCase())
   );
   const calendarStatus = overview?.calendar_status;
+  const financeCalendar = overview?.finance_events ?? [];
+  const financeCalendarStatus = overview?.finance_calendar_status;
+  const calendarMonthSeed = monthKeyFromIso(tradeDate
+    ?? calendar[0]?.date
+    ?? financeCalendar[0]?.date
+    ?? new Date().toISOString().slice(0, 10));
+  const [calendarMonth, setCalendarMonth] = useState(calendarMonthSeed);
+  const mergedCalendarEvents = [
+    ...calendar.map((event) => ({
+      id: `${event.date}::macro::${event.name}`,
+      label: event.name,
+      meta: String(event.impact).toUpperCase() === "H" || String(event.impact).toUpperCase() === "HIGH" ? "High impact" : "Medium impact",
+      tone: String(event.impact).toUpperCase() === "H" || String(event.impact).toUpperCase() === "HIGH" ? "macroHigh" as const : "macroMedium" as const,
+      date: event.date,
+    })),
+    ...financeCalendar.map((event: FinanceCalendarEvent) => ({
+      id: `${event.date}::finance::${event.symbol}`,
+      label: event.symbol,
+      meta: event.name,
+      tone: "finance" as const,
+      date: event.date,
+    })),
+  ];
+  const availableMonths = Array.from(
+    new Set([calendarMonthSeed, ...mergedCalendarEvents.map((event) => monthKeyFromIso(event.date))])
+  ).sort();
+  const visibleCalendarMonth = availableMonths.includes(calendarMonth) ? calendarMonth : calendarMonthSeed;
+  const mergedCalendarView = buildMonthlyCalendar(
+    visibleCalendarMonth,
+    mergedCalendarEvents
+      .filter((event) => monthKeyFromIso(event.date) === visibleCalendarMonth)
+      .map(({ date: _date, ...event }) => event)
+  );
+  const hasCalendarEvents = mergedCalendarEvents.length > 0;
+  const calendarMessage = calendarStatus?.state === "unavailable"
+    ? calendarStatus.message
+    : financeCalendarStatus?.state === "unavailable"
+      ? financeCalendarStatus.message
+      : hasCalendarEvents
+        ? null
+        : calendarStatus?.message ?? financeCalendarStatus?.message ?? "No macro or financial events scheduled for this period.";
+
+  useEffect(() => {
+    setCalendarMonth(calendarMonthSeed);
+  }, [calendarMonthSeed]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -229,7 +351,7 @@ export function MarketScreen() {
     );
   }
 
-  if (error) {
+  if (error && !overview) {
     return (
       <div className={styles.page}>
         <div className={styles.empty}>Markets are closed. Showing last session.</div>
@@ -365,20 +487,67 @@ export function MarketScreen() {
           </section>
 
           <section className={styles.section}>
-            <h2 className={styles.sectionTitle}>Economic calendar</h2>
-            {calendar.length > 0 ? (
-              <div className={styles.calendarList}>
-                {calendar.map((event) => (
-                  <div key={`${event.date}-${event.name}`} className={styles.calendarEvent}>
-                    <span>{event.date}</span>
-                    <strong>{event.name}</strong>
-                    <span className={styles.impactBadge}>{event.impact}</span>
+            <div className={styles.calendarHeader}>
+              <h2 className={styles.sectionTitle}>Market calendar</h2>
+              <div className={styles.calendarToolbar}>
+                <div className={styles.calendarLegend}>
+                  <span className={`${styles.legendItem} ${styles.legendMacroHigh}`}>Macro high</span>
+                  <span className={`${styles.legendItem} ${styles.legendMacroMedium}`}>Macro medium</span>
+                  <span className={`${styles.legendItem} ${styles.legendFinance}`}>Earnings</span>
+                </div>
+                <div className={styles.calendarMonthNav}>
+                  <button
+                    type="button"
+                    className={styles.chartModeBtn}
+                    onClick={() => setCalendarMonth(shiftMonth(visibleCalendarMonth, -1))}
+                    disabled={visibleCalendarMonth <= availableMonths[0]}
+                  >
+                    Prev month
+                  </button>
+                  <span className={styles.calendarMonthLabel}>{mergedCalendarView.label}</span>
+                  <button
+                    type="button"
+                    className={styles.chartModeBtn}
+                    onClick={() => setCalendarMonth(shiftMonth(visibleCalendarMonth, 1))}
+                    disabled={visibleCalendarMonth >= availableMonths[availableMonths.length - 1]}
+                  >
+                    Next month
+                  </button>
+                </div>
+              </div>
+            </div>
+            {hasCalendarEvents ? (
+              <div className={styles.calendarGrid}>
+                {(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const).map((day) => (
+                  <div key={day} className={styles.calendarWeekday}>{day}</div>
+                ))}
+                {mergedCalendarView.weeks.flat().map((cell) => (
+                  <div key={cell.key} className={`${styles.calendarCell} ${cell.dayNumber ? "" : styles.calendarCellMuted}`.trim()}>
+                    {cell.dayNumber ? <span className={styles.calendarDayNumber}>{cell.dayNumber}</span> : null}
+                    <div className={styles.calendarItems}>
+                      {cell.events.map((event) => (
+                        <div
+                          key={event.id}
+                          className={[
+                            styles.calendarPill,
+                            event.tone === "macroHigh"
+                              ? styles.calendarPillMacroHigh
+                              : event.tone === "macroMedium"
+                                ? styles.calendarPillMacroMedium
+                                : styles.calendarPillFinance,
+                          ].join(" ")}
+                        >
+                          <strong>{event.label}</strong>
+                          <span>{event.meta}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
               <div className={styles.emptyPanel}>
-                {calendarStatus?.message ?? "No medium or high impact events scheduled for the selected session."}
+                {calendarMessage}
               </div>
             )}
           </section>

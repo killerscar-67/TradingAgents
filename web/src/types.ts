@@ -129,6 +129,13 @@ export interface MarketCalendarEvent {
   impact: string;
 }
 
+export interface MarketFinanceCalendarEvent {
+  date: string;
+  symbol: string;
+  name: string;
+  event_type: string;
+}
+
 export interface MarketCalendarStatus {
   provider: string;
   state: "ready" | "empty" | "unavailable";
@@ -144,15 +151,22 @@ export interface MarketOverview {
   sectors?: SectorTile[];
   events?: MarketCalendarEvent[];
   calendar_status?: MarketCalendarStatus;
+  finance_events?: MarketFinanceCalendarEvent[];
+  finance_calendar_status?: MarketCalendarStatus;
   status: string;
 }
 
 export interface ScreeningResult {
   symbol: string;
   score: number;
-  regime_label: string;
-  entry_mode: string;
-  status: string;
+  regime?: Partial<RegimeData>;
+  regime_label?: string;
+  suggested_entry_mode?: string;
+  entry_mode?: string;
+  signal?: string;
+  status?: string;
+  confidence?: number | null;
+  last_price?: number;
 }
 
 export interface BasketData {

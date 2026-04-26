@@ -25,6 +25,7 @@ export function useMarketOverview() {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data: MarketOverview = await resp.json();
         if (!cancelled) {
+          setError(null);
           setOverview(data);
           setLoading(false);
         }
@@ -47,10 +48,12 @@ export function useMarketOverview() {
         try {
           const message: MarketLiveMessage = JSON.parse(e.data);
           if (message.type === "market_snapshot" && message.payload) {
+            setError(null);
             setOverview(message.payload);
             return;
           }
           const patch = message as Partial<MarketOverview>;
+          setError(null);
           setOverview((prev) => (prev ? { ...prev, ...patch } : prev));
         } catch {
           // ignore malformed messages

@@ -1,6 +1,8 @@
 """FastAPI integration tests using TestClient."""
 
+import importlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -131,6 +133,21 @@ class ModelCatalogTests(unittest.TestCase):
 
         self.assertTrue(providers["azure"]["custom"])
         self.assertTrue(providers["openrouter"]["custom"])
+
+
+@unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")
+class WebAppEnvLoadingTests(unittest.TestCase):
+    def test_web_app_loads_dotenv_on_import(self):
+        with patch.dict(os.environ, {"FMP_API_KEY": ""}, clear=False), patch(
+            "dotenv.main.find_dotenv",
+            return_value="/Users/josephwong/TradingAgents/.env",
+        ):
+            os.environ.pop("FMP_API_KEY", None)
+            import tradingagents.web.app as web_app_module
+
+            importlib.reload(web_app_module)
+
+            self.assertTrue(os.getenv("FMP_API_KEY"))
 
 
 @unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")

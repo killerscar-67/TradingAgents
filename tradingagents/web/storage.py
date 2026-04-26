@@ -21,6 +21,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     "home_market": "US",
     "output_language": "English",
     "calendar_provider": "fmp",
+    "finance_calendar_provider": "finnhub",
     "llm_provider": "qwen",
     "deep_think_llm": "qwen-plus",
     "quick_think_llm": "qwen-turbo",

@@ -38,6 +38,15 @@ const contractReadyOverview: MarketOverview = {
     state: "ready",
     message: null,
   },
+  finance_events: [
+    { date: "2026-01-07", symbol: "AAPL", name: "Earnings", event_type: "earnings" },
+    { date: "2026-01-15", symbol: "MSFT", name: "Earnings", event_type: "earnings" },
+  ],
+  finance_calendar_status: {
+    provider: "fmp",
+    state: "ready",
+    message: null,
+  },
   status: "ready",
 };
 
@@ -199,7 +208,7 @@ describe("MarketScreen", () => {
     vi.useRealTimers();
   });
 
-  it("renders home-index chart controls, sector heatmap, and economic calendar", async () => {
+  it("renders a merged monthly market calendar with colored event types", async () => {
     stubFetch();
     renderScreen();
     await waitFor(() => expect(screen.getByText("Technology")).toBeInTheDocument());
@@ -211,7 +220,42 @@ describe("MarketScreen", () => {
     expect(screen.getByRole("button", { name: "Line" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText("Energy")).toBeInTheDocument();
     expect(screen.getByText("CPI")).toBeInTheDocument();
+    expect(screen.getByText("Market calendar")).toBeInTheDocument();
+    expect(screen.getByText("Macro high")).toBeInTheDocument();
+    expect(screen.getByText("Macro medium")).toBeInTheDocument();
+    expect(screen.getAllByText("Earnings").length).toBeGreaterThan(0);
+    expect(screen.getByText("January 2026")).toBeInTheDocument();
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
     expect(screen.queryByText("Minor data")).not.toBeInTheDocument();
+  });
+
+  it("lets the user change calendar months", async () => {
+    stubFetch({
+      ...contractReadyOverview,
+      events: [
+        ...(contractReadyOverview.events ?? []),
+        { date: "2025-12-18", name: "FOMC", impact: "H" },
+        { date: "2026-02-12", name: "PPI", impact: "M" },
+      ],
+      finance_events: [
+        ...(contractReadyOverview.finance_events ?? []),
+        { date: "2026-02-04", symbol: "AMZN", name: "Earnings", event_type: "earnings" },
+      ],
+    });
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByText("January 2026")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Prev month" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next month" })).toBeEnabled();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Next month" }));
+    expect(screen.getByText("February 2026")).toBeInTheDocument();
+    expect(screen.getByText("AMZN")).toBeInTheDocument();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Prev month" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Prev month" }));
+    expect(screen.getByText("December 2025")).toBeInTheDocument();
+    expect(screen.getByText("FOMC")).toBeInTheDocument();
   });
 
   it("shows a clear calendar empty state when the provider is unavailable", async () => {
@@ -222,6 +266,12 @@ describe("MarketScreen", () => {
         provider: "fmp",
         state: "unavailable",
         message: "Economic calendar unavailable. Set FMP_API_KEY to load upcoming events.",
+      },
+      finance_events: [],
+      finance_calendar_status: {
+        provider: "fmp",
+        state: "unavailable",
+        message: "Financial calendar unavailable. Set FMP_API_KEY to load upcoming events.",
       },
     });
     renderScreen();
@@ -336,6 +386,67 @@ describe("MarketScreen", () => {
     expect(
       mockFetch.mock.calls.filter(([url]) => String(url).includes("/api/market/chart?")).length
     ).toBe(1);
+  });
+
+  it("recovers from an initial overview fetch failure when a websocket snapshot arrives", async () => {
+    const sockets: Array<{
+      onopen: (() => void) | null;
+      onmessage: ((e: MessageEvent) => void) | null;
+      onclose: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+      url: string;
+    }> = [];
+
+    const mockFetch = vi.fn(async (url: string) => {
+      const path = new URL(url, "http://127.0.0.1").pathname + new URL(url, "http://127.0.0.1").search;
+      if (path === "/api/market/overview") {
+        throw new Error("network lost");
+      }
+      if (path.startsWith("/api/market/chart")) {
+        return {
+          ok: true,
+          json: async () => ({
+            interval: "1D",
+            has_more: false,
+            points: [{ time: 1, value: 500 }],
+            bars: [{ time: 1, open: 495, high: 502, low: 492, close: 500 }],
+          }),
+        };
+      }
+      return { ok: false, json: async () => ({}) };
+    });
+
+    vi.stubGlobal("fetch", mockFetch);
+    vi.stubGlobal("WebSocket", class {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+      close() {}
+    });
+
+    renderScreen();
+    await waitFor(() => expect(screen.getByText(/markets are closed\. showing last session\./i)).toBeInTheDocument());
+
+    await act(async () => {
+      sockets[0]?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "market_snapshot",
+            payload: contractReadyOverview,
+          }),
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText(/bull.*momentum/i)).toBeInTheDocument());
+    expect(screen.queryByText(/markets are closed\. showing last session\./i)).not.toBeInTheDocument();
   });
 
   it("lets the user toggle between candle and line charts", async () => {
