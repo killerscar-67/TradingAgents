@@ -509,16 +509,38 @@ def get_user_selections():
     )
     selected_ticker = get_ticker()
 
-    # Step 2: Analysis date
-    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    # Step 2a: Trading style
     console.print(
         create_question_box(
-            "Step 2: Analysis Date",
-            "Enter the analysis date (YYYY-MM-DD)",
-            default_date,
+            "Step 2a: Trading Style",
+            "Choose swing (daily, default) or day-trade (intraday)",
+            "swing",
         )
     )
-    analysis_date = get_analysis_date()
+    trading_style = ask_trading_style()
+
+    # Step 2b: Analysis date / datetime
+    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    if trading_style == "daytrade":
+        console.print(
+            create_question_box(
+                "Step 2b: Analysis Moment",
+                "Enter date or ISO 8601 datetime; outside RTH walks back to prior session",
+                default_date,
+            )
+        )
+        analysis_date = get_analysis_datetime()
+        intraday_interval = ask_intraday_interval()
+    else:
+        console.print(
+            create_question_box(
+                "Step 2b: Analysis Date",
+                "Enter the analysis date (YYYY-MM-DD)",
+                default_date,
+            )
+        )
+        analysis_date = get_analysis_date()
+        intraday_interval = None
 
     # Step 3: Output language
     console.print(
@@ -609,6 +631,8 @@ def get_user_selections():
         "openai_reasoning_effort": reasoning_effort,
         "anthropic_effort": anthropic_effort,
         "output_language": output_language,
+        "trading_style": trading_style,
+        "intraday_interval": intraday_interval,
     }
 
 
@@ -926,9 +950,13 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis():
+def run_analysis(overrides: Optional[dict] = None):
     # First get all user selections
     selections = get_user_selections()
+    if overrides:
+        for k, v in overrides.items():
+            if v is not None:
+                selections[k] = v
 
     # Create config with selected research depth
     config = DEFAULT_CONFIG.copy()
@@ -943,6 +971,10 @@ def run_analysis():
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
+    # Trading style + intraday config
+    config["trading_style"] = selections.get("trading_style", "swing")
+    if selections.get("intraday_interval"):
+        config["intraday_interval"] = selections["intraday_interval"]
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -1197,8 +1229,27 @@ def run_analysis():
 
 
 @app.command()
-def analyze():
-    run_analysis()
+def analyze(
+    trading_style: Optional[str] = typer.Option(
+        None, "--trading-style", "-s",
+        help="swing | daytrade. Overrides interactive prompt.",
+    ),
+    interval: Optional[str] = typer.Option(
+        None, "--interval", "-i",
+        help="Intraday bar interval (1m, 5m, 15m, 30m, 1h). Daytrade mode only.",
+    ),
+    when: Optional[str] = typer.Option(
+        None, "--datetime", "-d",
+        help="Analysis moment (YYYY-MM-DD or ISO 8601). Overrides interactive prompt.",
+    ),
+):
+    """Run a single trading analysis. With no flags, prompts interactively."""
+    overrides = {
+        "trading_style": trading_style,
+        "intraday_interval": interval,
+        "analysis_date": when,
+    }
+    run_analysis(overrides={k: v for k, v in overrides.items() if v is not None} or None)
 
 
 if __name__ == "__main__":

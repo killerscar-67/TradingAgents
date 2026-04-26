@@ -43,6 +43,18 @@ class ConditionalLogic:
             return "tools_fundamentals"
         return "Msg Clear Fundamentals"
 
+    def should_continue_intraday_market(self, state: AgentState):
+        """Determine if intraday market analysis should continue.
+
+        Uses its own tool node so multi-analyst daytrade runs (e.g. intraday
+        + news) keep separate tool routing per analyst category.
+        """
+        messages = state["messages"]
+        last_message = messages[-1]
+        if last_message.tool_calls:
+            return "tools_intraday_market"
+        return "Msg Clear Intraday_market"
+
     def should_continue_debate(self, state: AgentState) -> str:
         """Determine if debate should continue."""
 
