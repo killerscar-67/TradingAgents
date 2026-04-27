@@ -30,6 +30,15 @@ def _make_analysis_test_client():
     return TestClient(app)
 
 
+def _make_journal_test_client():
+    from fastapi import FastAPI
+    from tradingagents.web.routes.journal import router as journal_router
+
+    app = FastAPI()
+    app.include_router(journal_router)
+    return TestClient(app)
+
+
 def _make_mock_graph(final_decision="HOLD"):
     mock_graph = MagicMock()
     mock_graph.graph.stream.return_value = iter([
@@ -107,6 +116,52 @@ class CreateAnalysisTests(unittest.TestCase):
             })
             self.assertEqual(resp.status_code, 200, ticker)
             self.assertIn(resp.json()["status"], ("pending", "running"))
+
+    def test_daytrade_request_defaults_intraday_analysts_and_interval(self):
+        resp = self.client.post("/api/analysis", json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-04-23",
+            "trading_style": "daytrade",
+        })
+
+        self.assertEqual(resp.status_code, 200)
+        run_id = resp.json()["run_id"]
+        detail = self.client.get(f"/api/analysis/{run_id}").json()
+        self.assertEqual(detail["trading_style"], "daytrade")
+        self.assertEqual(detail["selected_analysts"], ["intraday_market", "news"])
+        self.assertEqual(detail["intraday_interval"], "5m")
+
+    def test_daytrade_accepts_explicit_intraday_interval_and_datetime(self):
+        resp = self.client.post("/api/analysis", json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-04-23",
+            "trading_style": "daytrade",
+            "intraday_interval": "15m",
+            "trade_datetime": "2026-04-23T10:15:00-04:00",
+            "selected_analysts": ["intraday_market", "news"],
+        })
+
+        self.assertEqual(resp.status_code, 200)
+        detail = self.client.get(f"/api/analysis/{resp.json()['run_id']}").json()
+        self.assertEqual(detail["intraday_interval"], "15m")
+        self.assertEqual(detail["trade_datetime"], "2026-04-23T10:15:00-04:00")
+
+    def test_daytrade_rejects_unsupported_intraday_interval(self):
+        resp = self.client.post("/api/analysis", json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-04-23",
+            "trading_style": "daytrade",
+            "intraday_interval": "45m",
+        })
+        self.assertEqual(resp.status_code, 422)
+
+    def test_swing_rejects_intraday_market_analyst(self):
+        resp = self.client.post("/api/analysis", json={
+            "ticker": "AAPL",
+            "analysis_date": "2026-04-23",
+            "selected_analysts": ["intraday_market"],
+        })
+        self.assertEqual(resp.status_code, 422)
 
 
 @unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")
@@ -200,6 +255,12 @@ class GetAnalysisTests(unittest.TestCase):
                 "stats": {},
                 "errors": [],
                 "final_order_intent": None,
+                "trading_style": "daytrade",
+                "intraday_interval": "15m",
+                "trade_datetime": "2026-04-22T10:15:00-04:00",
+                "session_phase": "regular",
+                "data_session_date": "2026-04-22",
+                "intraday_decisions": [{"setup_name": "ORB", "bias": "long"}],
             }))
 
             with patch.dict("tradingagents.web.runner.DEFAULT_CONFIG", {"results_dir": tmp}, clear=False):
@@ -210,6 +271,93 @@ class GetAnalysisTests(unittest.TestCase):
         self.assertEqual(body["run_id"], run_id)
         self.assertEqual(body["ticker"], "MSFT")
         self.assertEqual(body["report_sections"]["market_report"], "Archived market report.")
+        self.assertEqual(body["trading_style"], "daytrade")
+        self.assertEqual(body["intraday_decisions"][0]["setup_name"], "ORB")
+
+
+@unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")
+class JournalApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.journal_path = str(Path(self.tmp.name) / "journal.sqlite")
+        self.client = _make_journal_test_client()
+
+    def _patch_config(self):
+        return patch.dict(
+            "tradingagents.web.routes.journal.DEFAULT_CONFIG",
+            {"journal_path": self.journal_path},
+            clear=False,
+        )
+
+    def _seed_decision(self):
+        from tradingagents.journal import Journal
+
+        journal = Journal(self.journal_path)
+        return journal.record_decision(
+            "AAPL",
+            "daytrade",
+            {
+                "variant": "default",
+                "setup_name": "VWAP reclaim",
+                "bias": "long",
+                "entry": 101.5,
+                "stop": 100.7,
+                "target1": 103.0,
+                "confidence": "medium",
+                "rationale": "Price reclaimed VWAP.",
+            },
+            {
+                "trade_datetime": "2026-04-23T10:15:00-04:00",
+                "session_phase": "regular",
+                "data_session_date": "2026-04-23",
+            },
+            {"intraday_interval": "5m"},
+        )
+
+    def test_list_decisions_returns_recent_journal_rows(self):
+        decision_id = self._seed_decision()
+
+        with self._patch_config():
+            resp = self.client.get("/api/journal/decisions?symbol=AAPL")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "ready")
+        self.assertEqual(body["decisions"][0]["id"], decision_id)
+        self.assertEqual(body["decisions"][0]["setup_name"], "VWAP reclaim")
+
+    def test_log_action_and_outcome_then_report(self):
+        decision_id = self._seed_decision()
+
+        with self._patch_config():
+            action_resp = self.client.post("/api/journal/actions", json={
+                "decision_id": decision_id,
+                "actor": "human",
+                "taken": True,
+                "fill_price": 101.5,
+                "fill_time": "2026-04-23T10:16:00-04:00",
+                "size": 10,
+                "notes": "Took the setup",
+            })
+            self.assertEqual(action_resp.status_code, 200)
+            action_id = action_resp.json()["action_id"]
+
+            outcome_resp = self.client.post("/api/journal/outcomes", json={
+                "action_id": action_id,
+                "exit_price": 103.0,
+                "exit_time": "2026-04-23T11:00:00-04:00",
+                "exit_reason": "target",
+            })
+            self.assertEqual(outcome_resp.status_code, 200)
+
+            report_resp = self.client.get("/api/journal/reports?by=strategy")
+
+        self.assertEqual(report_resp.status_code, 200)
+        body = report_resp.json()
+        self.assertEqual(body["status"], "ready")
+        self.assertIn("VWAP reclaim", body["markdown"])
+        self.assertGreaterEqual(len(body["rows"]), 1)
 
 
 @unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")

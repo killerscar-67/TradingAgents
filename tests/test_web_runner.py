@@ -53,6 +53,38 @@ def _make_graph_factory(chunks, final_decision="HOLD"):
     return factory
 
 
+def _make_capturing_graph_factory(chunks, capture, final_decision="HOLD"):
+    """Return a graph factory that records constructor and initial-state inputs."""
+    def factory(selected_analysts, config):
+        capture["selected_analysts"] = selected_analysts
+        capture["config"] = dict(config)
+        mock_graph = MagicMock()
+        mock_graph.graph.stream.return_value = iter(chunks)
+
+        def create_initial_state(company_name, trade_date, **kwargs):
+            capture["initial_state"] = {
+                "company_name": company_name,
+                "trade_date": trade_date,
+                **kwargs,
+            }
+            return {}
+
+        mock_graph.propagator.create_initial_state.side_effect = create_initial_state
+        mock_graph.propagator.get_graph_args.return_value = {}
+        mock_graph.build_order_intent.return_value = {
+            "rating": final_decision,
+            "blocked": False,
+            "source": "llm_assisted",
+            "execution_mode": "llm_assisted",
+            "reason": "",
+            "annotations": {},
+            "symbol": "AAPL",
+            "trade_date": "2026-04-23",
+        }
+        return mock_graph
+    return factory
+
+
 def _make_stats_factory():
     def factory():
         m = MagicMock()
@@ -94,6 +126,18 @@ class CreateRunTests(unittest.TestCase):
                 quick_think_llm="gpt-4o-mini",
             )
             self.assertEqual(run.ticker, ticker)
+
+    def test_daytrade_metadata_is_stored_on_run(self):
+        run = _make_run(
+            selected_analysts=["intraday_market", "news"],
+            trading_style="daytrade",
+            intraday_interval="15m",
+            trade_datetime="2026-04-23T10:15:00-04:00",
+        )
+
+        self.assertEqual(run.trading_style, "daytrade")
+        self.assertEqual(run.intraday_interval, "15m")
+        self.assertEqual(run.trade_datetime, "2026-04-23T10:15:00-04:00")
 
 
 class RunSyncTests(unittest.TestCase):
@@ -183,6 +227,58 @@ class RunSyncTests(unittest.TestCase):
         ], "BUY")
         self.assertIsNotNone(result.final_order_intent)
         self.assertEqual(result.final_order_intent["rating"], "BUY")
+
+    def test_daytrade_config_passed_to_graph_and_initial_state(self):
+        run = _make_run(
+            selected_analysts=["intraday_market", "news"],
+            trading_style="daytrade",
+            intraday_interval="15m",
+            trade_datetime="2026-04-23T10:15:00-04:00",
+        )
+        capture = {}
+
+        result = run_sync(
+            run.run_id,
+            config={"journal_enabled": True},
+            _graph_factory=_make_capturing_graph_factory(
+                [{"messages": [], "final_trade_decision": "HOLD"}],
+                capture,
+            ),
+            _stats_factory=_make_stats_factory(),
+            _save_report=MagicMock(),
+        )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(capture["selected_analysts"], ["intraday_market", "news"])
+        self.assertEqual(capture["config"]["trading_style"], "daytrade")
+        self.assertEqual(capture["config"]["intraday_interval"], "15m")
+        self.assertEqual(capture["initial_state"]["trading_style"], "daytrade")
+        self.assertEqual(capture["initial_state"]["trade_date"], "2026-04-23T10:15:00-04:00")
+
+    def test_intraday_decisions_are_persisted_from_final_state(self):
+        run = _make_run(trading_style="daytrade", intraday_interval="5m")
+        decision = {
+            "variant": "default",
+            "setup_name": "VWAP reclaim",
+            "bias": "long",
+            "entry": 101.5,
+            "stop": 100.7,
+            "target1": 103.0,
+            "confidence": "medium",
+            "rationale": "Price reclaimed VWAP.",
+        }
+
+        result = self._run(run, [{
+            "messages": [],
+            "final_trade_decision": "BUY",
+            "intraday_decisions": [decision],
+            "session_phase": "regular",
+            "data_session_date": "2026-04-23",
+        }])
+
+        self.assertEqual(result.intraday_decisions, [decision])
+        self.assertEqual(result.session_phase, "regular")
+        self.assertEqual(result.data_session_date, "2026-04-23")
 
 
 class LoadEventsFromDiskTests(unittest.TestCase):

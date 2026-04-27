@@ -57,6 +57,12 @@ class AnalysisRun:
     stats: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     final_order_intent: Optional[Dict[str, Any]] = None
+    trading_style: str = "swing"
+    intraday_interval: Optional[str] = None
+    trade_datetime: Optional[str] = None
+    session_phase: Optional[str] = None
+    data_session_date: Optional[str] = None
+    intraday_decisions: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

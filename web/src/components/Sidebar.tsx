@@ -15,6 +15,7 @@ const NAV_ITEMS: NavItem[] = [
   { screen: "strategy", label: "Strategy", icon: "◉" },
   { screen: "backtest", label: "Backtest", icon: "⊕" },
   { screen: "history", label: "History", icon: "☰" },
+  { screen: "journal", label: "Journal", icon: "□" },
   { screen: "settings", label: "Settings", icon: "⊙" },
 ];
 

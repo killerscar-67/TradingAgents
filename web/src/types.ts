@@ -18,6 +18,26 @@ export interface AnalysisRun {
   stats: Record<string, unknown>;
   errors: string[];
   final_order_intent: OrderIntent | null;
+  trading_style: "swing" | "daytrade";
+  intraday_interval: string | null;
+  trade_datetime: string | null;
+  session_phase: string | null;
+  data_session_date: string | null;
+  intraday_decisions: IntradayDecision[];
+}
+
+export interface IntradayDecision {
+  variant?: string | null;
+  setup_name?: string | null;
+  bias?: string | null;
+  entry?: number | string | null;
+  stop?: number | string | null;
+  target1?: number | string | null;
+  target2?: number | string | null;
+  time_stop?: string | null;
+  confidence?: string | null;
+  invalidation?: string | null;
+  rationale?: string | null;
 }
 
 export interface ModelOption {
@@ -90,6 +110,7 @@ export type Screen =
   | "strategy"
   | "backtest"
   | "history"
+  | "journal"
   | "settings";
 
 export interface RegimeData {
@@ -266,6 +287,24 @@ export interface AppSettings {
   futu_host?: string;
   futu_port?: number;
   status: string;
+}
+
+export interface JournalDecision extends IntradayDecision {
+  id: number;
+  created_at: string;
+  trade_datetime: string;
+  symbol: string;
+  trading_style: string;
+  session_phase?: string | null;
+  data_session_date?: string | null;
+  strategy_tag?: string | null;
+}
+
+export interface JournalReport {
+  status: string;
+  by: string;
+  markdown: string;
+  rows: Record<string, string>[];
 }
 
 export interface WorkflowSession {

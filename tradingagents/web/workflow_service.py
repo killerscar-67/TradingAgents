@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import logging
 import threading
 import calendar
@@ -702,11 +703,10 @@ def _fetch_finance_calendar_events(provider: str, symbols: Iterable[str], start_
     url = f"https://finnhub.io/api/v1/calendar/earnings?{params}"
     with urlopen(url, timeout=5) as response:
         payload = response.read().decode("utf-8")
-    data = pd.read_json(payload)
-    if data.empty:
+    data = json.loads(payload)
+    if not isinstance(data, dict):
         return []
-    calendar_rows = data.to_dict(orient="records")
-    earnings_rows = calendar_rows[0].get("earningsCalendar") if calendar_rows else None
+    earnings_rows = data.get("earningsCalendar")
     if not isinstance(earnings_rows, list):
         return []
     records: List[Dict[str, Any]] = []
@@ -1237,6 +1237,9 @@ def _run_single_item(
         llm_provider=llm_provider,
         deep_think_llm=deep_think_llm,
         quick_think_llm=quick_think_llm,
+        trading_style=payload.get("trading_style", "swing"),
+        intraday_interval=payload.get("intraday_interval"),
+        trade_datetime=payload.get("trade_datetime"),
     )
     item.update({"run_id": run.run_id, "status": "running", "started_at": _utc_now()})
     events.append({
@@ -1248,7 +1251,14 @@ def _run_single_item(
     store.update_analysis_batch(batch_id, items=items, events=events)
 
     try:
-        completed = runner.run_sync(run.run_id)
+        completed = runner.run_sync(
+            run.run_id,
+            config={
+                "trading_style": payload.get("trading_style", "swing"),
+                "intraday_interval": payload.get("intraday_interval"),
+                "trade_datetime": payload.get("trade_datetime"),
+            },
+        )
         if completed is None:
             raise RuntimeError("analysis run did not return a result")
         final_order = completed.final_order_intent or {}

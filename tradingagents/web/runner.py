@@ -41,6 +41,9 @@ def create_run(
     llm_provider: str,
     deep_think_llm: str,
     quick_think_llm: str,
+    trading_style: str = "swing",
+    intraday_interval: Optional[str] = None,
+    trade_datetime: Optional[str] = None,
 ) -> AnalysisRun:
     run_id = str(uuid.uuid4())
     run = AnalysisRun(
@@ -53,6 +56,9 @@ def create_run(
         deep_think_llm=deep_think_llm,
         quick_think_llm=quick_think_llm,
         created_at=_now(),
+        trading_style=trading_style,
+        intraday_interval=intraday_interval,
+        trade_datetime=trade_datetime,
     )
     q: queue.Queue = queue.Queue()
     with _registry_lock:
@@ -135,6 +141,11 @@ def run_sync(
     cfg["deep_think_llm"] = run.deep_think_llm
     cfg["quick_think_llm"] = run.quick_think_llm
     cfg["execution_mode"] = run.execution_mode
+    cfg["trading_style"] = run.trading_style
+    if run.intraday_interval:
+        cfg["intraday_interval"] = run.intraday_interval
+    if run.trade_datetime:
+        cfg["trade_datetime"] = run.trade_datetime
 
     if _graph_factory is None:
         # Lazy import so web module can be imported without installing all deps.
@@ -163,7 +174,12 @@ def run_sync(
             config=cfg,
         )
 
-        init_state = graph.propagator.create_initial_state(run.ticker, run.analysis_date)
+        graph_trade_date = run.trade_datetime if run.trading_style == "daytrade" and run.trade_datetime else run.analysis_date
+        init_state = graph.propagator.create_initial_state(
+            run.ticker,
+            graph_trade_date,
+            trading_style=run.trading_style,
+        )
         args = graph.propagator.get_graph_args(callbacks=[stats_handler])
 
         seq = [0]
@@ -208,6 +224,14 @@ def run_sync(
             val = final_state.get(key)
             if val:
                 run.report_sections[key] = val
+
+        if run.trading_style == "daytrade":
+            decisions = final_state.get("intraday_decisions") or []
+            run.intraday_decisions = decisions if isinstance(decisions, list) else []
+            run.session_phase = final_state.get("session_phase") or run.session_phase
+            run.data_session_date = final_state.get("data_session_date") or run.data_session_date
+            if final_state.get("trade_datetime"):
+                run.trade_datetime = final_state.get("trade_datetime")
 
         # Debate sections
         inv_debate = final_state.get("investment_debate_state") or {}

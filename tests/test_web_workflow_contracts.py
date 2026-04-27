@@ -1,5 +1,6 @@
 """Phase 11 tests for day-trade workflow API contracts."""
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -262,6 +263,36 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["finance_events"], [])
         self.assertEqual(body["finance_calendar_status"]["state"], "unavailable")
         self.assertIn("Financial calendar unavailable", body["finance_calendar_status"]["message"])
+
+    def test_market_overview_reads_finnhub_finance_calendar_payload(self):
+        urlopen_response = MagicMock()
+        urlopen_response.__enter__.return_value.read.return_value = json.dumps(
+            {
+                "earningsCalendar": [
+                    {"date": "2026-05-20", "symbol": "NVDA", "epsEstimate": 1.79},
+                    {"date": "2026-05-28", "symbol": "COST", "epsEstimate": 5.00},
+                    {"date": "2026-05-20", "symbol": "OTHER", "epsEstimate": 0.12},
+                ]
+            }
+        ).encode("utf-8")
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service.urlopen",
+            return_value=urlopen_response,
+        ), patch.dict(
+            os.environ,
+            {"FINNHUB_API_KEY": "test-key"},
+            clear=False,
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["finance_calendar_status"]["provider"], "finnhub")
+        self.assertEqual(body["finance_calendar_status"]["state"], "ready")
+        self.assertEqual([event["symbol"] for event in body["finance_events"]], ["NVDA", "COST"])
 
     def test_market_overview_tolerates_economic_calendar_provider_errors(self):
         with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(

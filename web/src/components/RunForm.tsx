@@ -8,13 +8,16 @@ interface Props {
   onViewArchives?: () => void;
 }
 
-const ANALYSTS = ["market", "social", "news", "fundamentals"];
+const SWING_ANALYSTS = ["market", "social", "news", "fundamentals"];
+const DAYTRADE_ANALYSTS = ["intraday_market", "news"];
 const ANALYST_LABELS: Record<string, string> = {
   market: "Market",
+  intraday_market: "Intraday market",
   social: "Social / sentiment",
   news: "News",
   fundamentals: "Fundamentals",
 };
+const INTRADAY_INTERVALS = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"];
 const FALLBACK_MODEL_CATALOG: ModelCatalog = {
   providers: {
     openai: {
@@ -90,7 +93,10 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
   const today = new Date().toISOString().split("T")[0];
   const [ticker, setTicker] = useState("");
   const [date, setDate] = useState(today);
-  const [analysts, setAnalysts] = useState<string[]>(ANALYSTS);
+  const [tradingStyle, setTradingStyle] = useState<"swing" | "daytrade">("swing");
+  const [analysts, setAnalysts] = useState<string[]>(SWING_ANALYSTS);
+  const [intradayInterval, setIntradayInterval] = useState("5m");
+  const [tradeDateTime, setTradeDateTime] = useState(`${today}T09:30`);
   const [provider, setProvider] = useState("openai");
   const [deepModel, setDeepModel] = useState("gpt-5.4");
   const [quickModel, setQuickModel] = useState("gpt-5.4-mini");
@@ -139,6 +145,17 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
     );
   };
 
+  const changeTradingStyle = (nextStyle: "swing" | "daytrade") => {
+    setTradingStyle(nextStyle);
+    if (nextStyle === "daytrade") {
+      setAnalysts(DAYTRADE_ANALYSTS);
+      setMode("llm_assisted");
+      setTradeDateTime(`${date}T09:30`);
+    } else {
+      setAnalysts(SWING_ANALYSTS);
+    }
+  };
+
   const changeProvider = (nextProvider: string) => {
     setProvider(nextProvider);
     const options = modelCatalog.providers[nextProvider];
@@ -174,6 +191,9 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
           llm_provider: provider,
           deep_think_llm: deepModel,
           quick_think_llm: quickModel,
+          trading_style: tradingStyle,
+          intraday_interval: tradingStyle === "daytrade" ? intradayInterval : undefined,
+          trade_datetime: tradingStyle === "daytrade" ? tradeDateTime : undefined,
         }),
       });
       if (!resp.ok) {
@@ -237,16 +257,74 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
                 className={styles.input}
                 type="date"
                 value={date}
-                onChange={(e) => setDate(e.target.value)}
+                onChange={(e) => {
+                  setDate(e.target.value);
+                  if (tradingStyle === "daytrade") {
+                    setTradeDateTime(`${e.target.value}T09:30`);
+                  }
+                }}
                 required
               />
             </div>
           </div>
 
           <div className={styles.field}>
+            <label className={styles.label}>Trading style</label>
+            <div className={styles.segmented}>
+              <button
+                type="button"
+                className={tradingStyle === "swing" ? styles.segmentActive : styles.segment}
+                onClick={() => changeTradingStyle("swing")}
+              >
+                Swing
+              </button>
+              <button
+                type="button"
+                className={tradingStyle === "daytrade" ? styles.segmentActive : styles.segment}
+                onClick={() => changeTradingStyle("daytrade")}
+              >
+                Daytrade
+              </button>
+            </div>
+          </div>
+
+          {tradingStyle === "daytrade" && (
+            <div className={styles.row}>
+              <div className={styles.field}>
+                <label className={styles.label} htmlFor="intraday-interval">
+                  Intraday interval
+                </label>
+                <select
+                  id="intraday-interval"
+                  className={styles.input}
+                  value={intradayInterval}
+                  onChange={(e) => setIntradayInterval(e.target.value)}
+                >
+                  {INTRADAY_INTERVALS.map((interval) => (
+                    <option key={interval} value={interval}>{interval}</option>
+                  ))}
+                </select>
+              </div>
+              <div className={styles.field}>
+                <label className={styles.label} htmlFor="trade-datetime">
+                  Trade datetime
+                </label>
+                <input
+                  id="trade-datetime"
+                  className={styles.input}
+                  type="datetime-local"
+                  value={tradeDateTime}
+                  onChange={(e) => setTradeDateTime(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+          )}
+
+          <div className={styles.field}>
             <label className={styles.label}>Analyst teams</label>
             <div className={styles.checkboxRow}>
-              {ANALYSTS.map((a) => (
+              {(tradingStyle === "daytrade" ? DAYTRADE_ANALYSTS : SWING_ANALYSTS).map((a) => (
                 <label key={a} className={styles.checkboxLabel}>
                   <input
                     type="checkbox"

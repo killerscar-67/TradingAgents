@@ -26,6 +26,11 @@ const STATUS_CLASS: Record<string, string> = {
   error: "statusError",
 };
 
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
+}
+
 export function RunDetail({ runId, onBack }: Props) {
   const { run, error } = useAnalysisRun(runId);
   const { events } = useSSE(runId);
@@ -74,6 +79,15 @@ export function RunDetail({ runId, onBack }: Props) {
         <button className={styles.backBtn} onClick={onBack}>← New analysis</button>
         <span className={styles.ticker}>{run?.ticker ?? "…"}</span>
         <span className={styles.date}>{run?.analysis_date}</span>
+        {run?.trading_style && (
+          <span className={styles.metaChip}>{run.trading_style}</span>
+        )}
+        {run?.intraday_interval && (
+          <span className={styles.metaChip}>{run.intraday_interval}</span>
+        )}
+        {run?.session_phase && (
+          <span className={styles.metaChip}>{run.session_phase}</span>
+        )}
         {run && (
           <span className={`${styles.statusBadge} ${styles[STATUS_CLASS[run.status]]}`}>
             {STATUS_LABEL[run.status]}
@@ -90,6 +104,40 @@ export function RunDetail({ runId, onBack }: Props) {
         </aside>
 
         <main className={styles.center}>
+          {run?.trading_style === "daytrade" && run.intraday_decisions.length > 0 && (
+            <section className={styles.intradayPanel} aria-label="Intraday setup">
+              <div className={styles.intradayHeader}>
+                <h2>Intraday Setup</h2>
+                <span>{run.trade_datetime ?? run.data_session_date ?? run.analysis_date}</span>
+              </div>
+              <div className={styles.setupGrid}>
+                {run.intraday_decisions.map((decision, index) => (
+                  <article key={`${decision.variant ?? "decision"}-${index}`} className={styles.setupCard}>
+                    <div className={styles.setupTop}>
+                      <strong>{decision.setup_name || "Unnamed setup"}</strong>
+                      <span>{decision.bias || "no-trade"}</span>
+                    </div>
+                    <div className={styles.levels}>
+                      <span>Entry {formatValue(decision.entry)}</span>
+                      <span>Stop {formatValue(decision.stop)}</span>
+                      <span>Target {formatValue(decision.target1)}</span>
+                      {decision.target2 !== undefined && decision.target2 !== null && (
+                        <span>Target 2 {formatValue(decision.target2)}</span>
+                      )}
+                    </div>
+                    <p>{decision.rationale || "No rationale recorded."}</p>
+                    {decision.invalidation && (
+                      <p className={styles.invalidation}>Invalidation: {decision.invalidation}</p>
+                    )}
+                    <div className={styles.setupMeta}>
+                      <span>{decision.variant || "default"}</span>
+                      <span>{decision.confidence || "confidence n/a"}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           <ReportTabs
             sections={reportSections}
             orderIntent={run?.final_order_intent ?? null}

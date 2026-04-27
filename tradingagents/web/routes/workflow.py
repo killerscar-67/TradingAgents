@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from tradingagents.web import runner
@@ -34,7 +34,10 @@ from tradingagents.web.workflow_service import (
 
 router = APIRouter(tags=["workflow"])
 
-_VALID_ANALYSTS = {"market", "social", "news", "fundamentals"}
+_VALID_SWING_ANALYSTS = {"market", "social", "news", "fundamentals"}
+_VALID_DAYTRADE_ANALYSTS = {"intraday_market", "news"}
+_VALID_ANALYSTS = _VALID_SWING_ANALYSTS | _VALID_DAYTRADE_ANALYSTS
+_VALID_INTRADAY_INTERVALS = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 _VALID_STRATEGIES = {"auto", "breakout", "mean_reversion"}
 _VALID_HORIZONS = {"intraday", "swing"}
 _VALID_SESSION_STATUSES = {"draft", "active", "completed", "archived"}
@@ -109,6 +112,9 @@ class BatchRequest(BaseModel):
     llm_provider: Optional[str] = None
     deep_think_llm: Optional[str] = None
     quick_think_llm: Optional[str] = None
+    trading_style: str = "swing"
+    intraday_interval: Optional[str] = None
+    trade_datetime: Optional[str] = None
 
     @field_validator("selected_analysts")
     @classmethod
@@ -117,6 +123,38 @@ class BatchRequest(BaseModel):
         if unknown:
             raise ValueError(f"Unknown analysts: {unknown}")
         return value
+
+    @field_validator("trading_style")
+    @classmethod
+    def valid_trading_style(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"swing", "daytrade"}:
+            raise ValueError("trading_style must be swing or daytrade")
+        return normalized
+
+    @field_validator("intraday_interval")
+    @classmethod
+    def valid_intraday_interval(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip()
+        if normalized not in _VALID_INTRADAY_INTERVALS:
+            raise ValueError(f"intraday_interval must be one of {_VALID_INTRADAY_INTERVALS}")
+        return normalized
+
+    @model_validator(mode="after")
+    def normalize_daytrade_batch(self) -> "BatchRequest":
+        if self.trading_style == "daytrade":
+            if self.selected_analysts == ["market", "social", "news", "fundamentals"]:
+                self.selected_analysts = ["intraday_market", "news"]
+            unknown = set(self.selected_analysts) - _VALID_DAYTRADE_ANALYSTS
+            if unknown:
+                raise ValueError("daytrade selected_analysts may only include intraday_market and news")
+            if self.intraday_interval is None:
+                self.intraday_interval = "5m"
+            if self.trade_datetime is None:
+                self.trade_datetime = f"{self.analysis_date}T09:30:00-04:00"
+        return self
 
 
 class StrategyFromBatchRequest(BaseModel):

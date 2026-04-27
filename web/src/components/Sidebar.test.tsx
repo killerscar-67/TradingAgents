@@ -12,7 +12,7 @@ function renderSidebar() {
 }
 
 describe("Sidebar", () => {
-  it("renders all 7 nav items", () => {
+  it("renders all 8 nav items", () => {
     renderSidebar();
     expect(screen.getByRole("button", { name: /market/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /screening/i })).toBeInTheDocument();
@@ -20,6 +20,7 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /strategy/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /backtest/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /history/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /journal/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 

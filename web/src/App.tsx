@@ -6,6 +6,7 @@ import { BatchScreen } from "./screens/BatchScreen";
 import { StrategyScreen } from "./screens/StrategyScreen";
 import { BacktestScreen } from "./screens/BacktestScreen";
 import { HistoryScreen } from "./screens/HistoryScreen";
+import { JournalScreen } from "./screens/JournalScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 
 function ScreenRouter() {
@@ -17,6 +18,7 @@ function ScreenRouter() {
     case "strategy":  return <StrategyScreen />;
     case "backtest":  return <BacktestScreen />;
     case "history":   return <HistoryScreen />;
+    case "journal":   return <JournalScreen />;
     case "settings":  return <SettingsScreen />;
   }
 }

@@ -76,6 +76,34 @@ describe("RunForm", () => {
     );
   });
 
+  it("submits daytrade controls with intraday defaults", async () => {
+    const fetchMock = stubFetch();
+
+    render(<RunForm onRunCreated={onRunCreated} />);
+    fireEvent.change(screen.getByPlaceholderText(/AAPL, SHOP\.TO/), { target: { value: "AAPL" } });
+    fireEvent.click(screen.getByRole("button", { name: /daytrade/i }));
+
+    const interval = screen.getByLabelText(/intraday interval/i);
+    expect((interval as HTMLSelectElement).value).toBe("5m");
+    expect(screen.getByRole("checkbox", { name: /intraday market/i })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /news/i })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: /fundamentals/i })).not.toBeInTheDocument();
+
+    fireEvent.change(interval, { target: { value: "15m" } });
+    fireEvent.change(screen.getByLabelText(/trade datetime/i), {
+      target: { value: "2026-04-23T10:15" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /analyze aapl/i }));
+
+    await waitFor(() => expect(onRunCreated).toHaveBeenCalledWith("abc-123"));
+    const [, init] = fetchMock.mock.calls.find(([url]) => url === "/api/analysis") ?? [];
+    const payload = JSON.parse(String(init?.body));
+    expect(payload.trading_style).toBe("daytrade");
+    expect(payload.selected_analysts).toEqual(["intraday_market", "news"]);
+    expect(payload.intraday_interval).toBe("15m");
+    expect(payload.trade_datetime).toBe("2026-04-23T10:15");
+  });
+
   it("shows error when API returns non-ok", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/models") {

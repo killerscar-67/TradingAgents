@@ -46,6 +46,15 @@
   font-weight: 500;
 }
 
+.metaChip {
+  font-size: 12px;
+  padding: 2px 8px;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  color: #cbd5e1;
+  background: #111827;
+}
+
 .statusPending { background: #1e293b; color: #64748b; }
 .statusRunning { background: #422006; color: #fbbf24; }
 .statusDone    { background: #052e16; color: #4ade80; }
@@ -78,6 +87,91 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.intradayPanel {
+  margin: 12px 14px 0;
+  padding: 12px;
+  border: 1px solid #243244;
+  border-radius: 8px;
+  background: #111827;
+}
+
+.intradayHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.intradayHeader h2 {
+  margin: 0;
+  font-size: 14px;
+  color: #f8fafc;
+}
+
+.intradayHeader span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.setupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.setupCard {
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 10px;
+  background: #0f172a;
+}
+
+.setupTop,
+.setupMeta,
+.levels {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setupTop {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.setupTop strong {
+  color: #e5e7eb;
+  font-size: 13px;
+}
+
+.setupTop span,
+.setupMeta span,
+.levels span {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.levels {
+  margin-bottom: 8px;
+}
+
+.setupCard p {
+  margin: 0 0 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.invalidation {
+  color: #fca5a5 !important;
+}
+
+.setupMeta {
+  justify-content: flex-end;
 }
 
 .consultant {
