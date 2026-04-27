@@ -91,6 +91,9 @@ def build_analysis_brief(
     }
 
 
+_HISTORY_MARKER = "\n…[history truncated]…\n"
+
+
 def cap_debate_history(
     history: str,
     max_chars: int = 2000,
@@ -98,17 +101,24 @@ def cap_debate_history(
 ) -> str:
     """Keep the tail of debate history within max_chars.
 
-    Preserves the most-recent preserve_latest_chars verbatim, then fills
+    Preserves the most-recent preserve_latest_chars verbatim, then fills any
     remaining budget with the earliest content (separated by a gap marker).
+    The returned string is always at most ``max_chars`` characters: when the
+    caller passes a preserve budget greater than ``max_chars`` we clamp it so
+    the result still respects the cap.
     """
     if not history or len(history) <= max_chars:
         return history
-    tail = history[-preserve_latest_chars:]
-    head_budget = max_chars - preserve_latest_chars - 40  # room for marker
+    marker_len = len(_HISTORY_MARKER)
+    # Reserve room for the marker; clamp the tail budget so head+marker+tail
+    # cannot exceed max_chars even when preserve_latest_chars is huge.
+    preserve = max(0, min(preserve_latest_chars, max_chars - marker_len))
+    tail = history[-preserve:] if preserve else ""
+    head_budget = max_chars - preserve - marker_len
     if head_budget > 0:
         head = history[:head_budget].rstrip()
-        return head + "\n…[history truncated]…\n" + tail
-    return "…[history truncated]…\n" + tail
+        return head + _HISTORY_MARKER + tail
+    return _HISTORY_MARKER.lstrip() + tail
 
 def create_msg_delete():
     def delete_messages(state):
@@ -187,6 +197,7 @@ def create_parallel_analysts_node(analyst_nodes: dict):
             return only_node(state)
 
         merged: dict = {}
+        sources: dict = {}  # state-key -> first analyst that wrote it
         with ThreadPoolExecutor(max_workers=len(analyst_nodes)) as executor:
             futures = {
                 name: executor.submit(node, state)
@@ -197,8 +208,22 @@ def create_parallel_analysts_node(analyst_nodes: dict):
                     update = future.result()
                 except Exception as exc:  # noqa: BLE001 - keep partial results
                     update = {f"{name}_report": f"[{name} analyst failed: {exc}]"}
-                if update:
-                    merged.update(update)
+                if not update:
+                    continue
+                for key in update:
+                    if key in sources:
+                        # Two analysts writing the same state field would
+                        # silently drop one. setup_graph already rejects
+                        # known collisions (e.g. market + intraday_market);
+                        # surface anything else loudly.
+                        raise RuntimeError(
+                            f"Parallel analyst '{name}' writes state field "
+                            f"'{key}' already produced by analyst "
+                            f"'{sources[key]}'. Either pick non-overlapping "
+                            f"analysts or namespace the output."
+                        )
+                    sources[key] = name
+                merged.update(update)
         return merged
 
     return parallel_node

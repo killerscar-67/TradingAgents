@@ -53,6 +53,16 @@ class GraphSetup:
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
+        # Both market and intraday_market write to the `market_report` state
+        # field. With analysts running in parallel inside one node, the merge
+        # would silently drop one of the two reports. Reject the combination
+        # explicitly: callers must pick swing OR daytrade, not both.
+        if "market" in selected_analysts and "intraday_market" in selected_analysts:
+            raise ValueError(
+                "Trading Agents Graph Setup Error: cannot select both 'market' and "
+                "'intraday_market' analysts; they share the market_report state field."
+            )
+
         # Create analyst nodes. Each analyst now runs a self-contained ReAct
         # loop (see agent_utils.run_analyst_loop), so the LangGraph tool nodes
         # and per-analyst Msg Clear nodes are no longer required.
