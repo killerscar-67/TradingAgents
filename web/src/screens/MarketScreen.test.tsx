@@ -321,9 +321,9 @@ describe("MarketScreen", () => {
   it("does not expose ET session controls for markets without ET trading sessions", async () => {
     const mockFetch = stubFetch({
       ...contractReadyOverview,
-      home_market: "CA",
+      home_market: "HK",
       indices: [
-        { symbol: "XIU.TO", label: "TSX Composite", price: 33.2, change_pct: 0.2 },
+        { symbol: "2800.HK", label: "Tracker Fund of Hong Kong", price: 21.2, change_pct: 0.2 },
       ],
       regime: {
         ...contractReadyOverview.regime,
@@ -334,7 +334,7 @@ describe("MarketScreen", () => {
     await waitFor(() =>
       expect(
         mockFetch.mock.calls.some(
-          ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=XIU.TO")
+          ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=2800.HK")
         )
       ).toBe(true)
     );
@@ -346,9 +346,118 @@ describe("MarketScreen", () => {
     expect(screen.queryByRole("button", { name: "Extended" })).not.toBeInTheDocument();
     expect(
       mockFetch.mock.calls.some(
-        ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=XIU.TO") && String(url).includes("session=")
+        ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=2800.HK") && String(url).includes("session=")
       )
     ).toBe(false);
+  });
+
+  it("ignores websocket messages that are not market snapshots", async () => {
+    const mockFetch = stubFetch();
+    const sockets: Array<{
+      onopen: (() => void) | null;
+      onmessage: ((e: MessageEvent) => void) | null;
+      onclose: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+      url: string;
+    }> = [];
+
+    vi.stubGlobal("WebSocket", class {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+      close() {}
+    });
+
+    renderScreen();
+    await waitFor(() => expect(screen.getByText("Confidence: 82%")).toBeInTheDocument());
+
+    await act(async () => {
+      sockets[0]?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "market_patch",
+            regime: {
+              ...contractReadyOverview.regime,
+              confidence: 10,
+            },
+          }),
+        })
+      );
+    });
+
+    expect(screen.getByText("Confidence: 82%")).toBeInTheDocument();
+    expect(
+      mockFetch.mock.calls.filter(([url]) => String(url).includes("/api/market/chart?")).length
+    ).toBe(1);
+  });
+
+  it("reconnects the market websocket with exponential backoff", async () => {
+    vi.useFakeTimers();
+    const sockets: Array<{
+      onopen: (() => void) | null;
+      onmessage: ((e: MessageEvent) => void) | null;
+      onclose: (() => void) | null;
+      onerror: (() => void) | null;
+      close: () => void;
+      url: string;
+    }> = [];
+
+    stubFetch();
+    vi.stubGlobal("WebSocket", class {
+      url: string;
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        this.url = url;
+        sockets.push(this);
+      }
+      close() {}
+    });
+
+    renderScreen();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      vi.runOnlyPendingTimers();
+    });
+    expect(sockets).toHaveLength(1);
+
+    act(() => {
+      sockets[0]?.onclose?.();
+    });
+    act(() => {
+      vi.advanceTimersByTime(4_999);
+    });
+    expect(sockets).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(sockets).toHaveLength(2);
+
+    act(() => {
+      sockets[1]?.onclose?.();
+    });
+    act(() => {
+      vi.advanceTimersByTime(9_999);
+    });
+    expect(sockets).toHaveLength(2);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(sockets).toHaveLength(3);
+
+    vi.useRealTimers();
   });
 
   it("does not reset the chart on websocket snapshots when symbol and trade date stay the same", async () => {

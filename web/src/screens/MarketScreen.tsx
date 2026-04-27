@@ -138,14 +138,10 @@ function mergeOlderSeries<T extends { time: number }>(current: T[], older: T[]):
 
 function homeIndexForMarket(market: string): string {
   switch (market) {
-    case "CA":
-      return "XIU.TO";
     case "HK":
       return "2800.HK";
     case "JP":
       return "EWJ";
-    case "UK":
-      return "EWU";
     default:
       return "SPY";
   }
@@ -167,8 +163,8 @@ export function MarketScreen() {
   const baseChartRequestRef = useRef(0);
   const backfillChartRequestRef = useRef(0);
   const chartFetchControllerRef = useRef<AbortController | null>(null);
-  const overviewHomeMarket = (overview as { home_market?: string } | null)?.home_market ?? overview?.regime?.home_market ?? "US";
-  const tradeDate = (overview as { trade_date?: string } | null)?.trade_date;
+  const overviewHomeMarket = overview?.home_market ?? "US";
+  const tradeDate = overview?.trade_date;
   const defaultChartSymbol = overview?.indices?.[0]?.symbol ?? homeIndexForMarket(overviewHomeMarket);
   const chartSymbol = selectedIndexSymbol || defaultChartSymbol;
   const hasOverview = Boolean(overview);

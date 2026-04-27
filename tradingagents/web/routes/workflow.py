@@ -235,7 +235,10 @@ class WorkflowSessionUpdateRequest(BaseModel):
 @router.get("/api/market/overview")
 def get_market_overview(home_market: str = "US", trade_date: Optional[str] = None) -> Dict[str, Any]:
     settings = get_workflow_store().get_settings_without_status()
-    return build_market_overview(home_market, trade_date, settings)
+    try:
+        return build_market_overview(home_market, trade_date, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/market/chart")
@@ -248,14 +251,17 @@ def get_market_chart(
     trade_date: Optional[str] = None,
     session: Optional[str] = None,
 ) -> Dict[str, Any]:
-    return build_market_chart(
-        symbol,
-        interval=interval or period,
-        limit=limit,
-        before=before,
-        trade_date=trade_date,
-        session=session,
-    )
+    try:
+        return build_market_chart(
+            symbol,
+            interval=interval or period,
+            limit=limit,
+            before=before,
+            trade_date=trade_date,
+            session=session,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.websocket("/api/market/live")

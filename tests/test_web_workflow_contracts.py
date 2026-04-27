@@ -512,6 +512,19 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertGreater(body["indices"][0]["price"], 0)
         self.assertEqual(body["breadth"]["pct_above_50d"], 100.0)
 
+    def test_compute_breadth_uses_normalized_daily_advance_decline_series(self):
+        from tradingagents.web.workflow_service import _compute_breadth
+
+        breadth = _compute_breadth(
+            {
+                "NVDA": _make_daily_history(start=100.0, step=100.0, periods=60),
+                "AAPL": _make_daily_history(start=100.0, step=-1.0, periods=60),
+            }
+        )
+
+        self.assertEqual(breadth["advance_decline_ratio"], 1.0)
+        self.assertEqual(breadth["mcclellan_oscillator"], 0.0)
+
     def test_market_overview_downloads_only_requested_home_market(self):
         calls = []
 
@@ -603,6 +616,15 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("close", body["bars"][0])
         self.assertEqual(body["oldest_time"], body["bars"][0]["time"])
         self.assertEqual(body["newest_time"], body["bars"][-1]["time"])
+
+    def test_market_routes_return_400_for_invalid_trade_dates(self):
+        overview = self.client.get("/api/market/overview?home_market=US&trade_date=not-a-date")
+        chart = self.client.get("/api/market/chart?symbol=SPY&interval=1D&limit=40&trade_date=not-a-date")
+
+        self.assertEqual(overview.status_code, 400)
+        self.assertEqual(chart.status_code, 400)
+        self.assertIn("Invalid trade_date", overview.json()["detail"])
+        self.assertIn("Invalid trade_date", chart.json()["detail"])
 
     def test_market_chart_route_reuses_cached_payload_for_identical_queries(self):
         import tradingagents.web.workflow_service as workflow_service

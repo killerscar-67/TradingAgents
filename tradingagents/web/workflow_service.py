@@ -354,6 +354,14 @@ def _chart_anchor_dt(trade_date: Optional[str], before: Optional[int]) -> dateti
         raise ValueError(f"Invalid trade_date {raw_date!r}; expected ISO date format YYYY-MM-DD") from exc
 
 
+def _parse_trade_date(raw_date: Optional[str]) -> datetime:
+    value = raw_date or date.today().isoformat()
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=None)
+    except ValueError as exc:
+        raise ValueError(f"Invalid trade_date {value!r}; expected ISO date format YYYY-MM-DD") from exc
+
+
 def _normalize_time_index(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return frame
@@ -580,7 +588,7 @@ def _compute_breadth(universe_histories: Dict[str, pd.DataFrame]) -> Dict[str, A
     decliners = 0
     new_highs = 0
     new_lows = 0
-    breadth_series: List[float] = []
+    daily_breadth_components: List[pd.Series] = []
     valid = 0
 
     for history in universe_histories.values():
@@ -608,14 +616,21 @@ def _compute_breadth(universe_histories: Dict[str, pd.DataFrame]) -> Dict[str, A
         if latest <= float(window.min()):
             new_lows += 1
 
-        returns = close.diff().fillna(0.0)
-        breadth_series.append(1.0 if daily_change > 0 else -1.0 if daily_change < 0 else 0.0)
-        breadth_series.extend(float(v) for v in returns.tail(20))
+        daily_signals = close.diff().dropna().map(
+            lambda change: 1.0 if float(change) > 0.0 else -1.0 if float(change) < 0.0 else 0.0
+        )
+        daily_breadth_components.append(daily_signals)
 
     if valid == 0:
         return _empty_breadth()
 
-    breadth = pd.Series(breadth_series, dtype=float)
+    breadth = pd.Series(dtype=float)
+    if daily_breadth_components:
+        breadth_frame = pd.concat(daily_breadth_components, axis=1)
+        active_counts = breadth_frame.notna().sum(axis=1)
+        net_breadth = breadth_frame.sum(axis=1, skipna=True)
+        breadth = (net_breadth / active_counts.where(active_counts > 0)).dropna().astype(float)
+
     ema19 = breadth.ewm(span=19, adjust=False).mean().iloc[-1] if not breadth.empty else 0.0
     ema39 = breadth.ewm(span=39, adjust=False).mean().iloc[-1] if not breadth.empty else 0.0
     pct50 = round(100.0 * pct_above_50 / valid, 2)
@@ -1107,8 +1122,9 @@ def get_market_overview(
     if resolved_market not in MARKET_DEFINITIONS:
         resolved_market = "US"
     as_of_date = trade_date or date.today().isoformat()
-    start = (datetime.fromisoformat(as_of_date) - timedelta(days=400)).date().isoformat()
-    end = (datetime.fromisoformat(as_of_date) + timedelta(days=1)).date().isoformat()
+    as_of_dt = _parse_trade_date(as_of_date)
+    start = (as_of_dt - timedelta(days=400)).date().isoformat()
+    end = (as_of_dt + timedelta(days=1)).date().isoformat()
 
     region_payloads: Dict[str, Dict[str, Any]] = {}
     for region, definition in MARKET_DEFINITIONS.items():

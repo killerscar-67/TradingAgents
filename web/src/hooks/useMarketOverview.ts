@@ -13,7 +13,13 @@ interface CachedOverviewEntry {
 }
 
 const OVERVIEW_CACHE_TTL_MS = 30_000;
+const WS_RECONNECT_BASE_DELAY_MS = 5_000;
+const WS_RECONNECT_MAX_DELAY_MS = 60_000;
 const overviewCache = new Map<string, CachedOverviewEntry>();
+
+function reconnectDelayMs(attempt: number): number {
+  return Math.min(WS_RECONNECT_BASE_DELAY_MS * (2 ** Math.max(attempt - 1, 0)), WS_RECONNECT_MAX_DELAY_MS);
+}
 
 export function __resetMarketOverviewCache(): void {
   overviewCache.clear();
@@ -30,8 +36,23 @@ export function useMarketOverview(homeMarket = "US") {
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectAttempt = 0;
     const cacheKey = homeMarket.toUpperCase();
     const abortController = new AbortController();
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer) {
+        return;
+      }
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWs();
+      }, reconnectDelayMs(reconnectAttempt));
+    };
 
     const fetchOverview = async () => {
       const cached = overviewCache.get(cacheKey);
@@ -71,30 +92,34 @@ export function useMarketOverview(homeMarket = "US") {
       const ws = new WebSocket(apiWsUrl(`/api/market/live?home_market=${encodeURIComponent(cacheKey)}`));
       wsRef.current = ws;
 
-      ws.onopen = () => { if (!cancelled) setLive(true); };
+      ws.onopen = () => {
+        reconnectAttempt = 0;
+        if (!cancelled) {
+          setLive(true);
+        }
+      };
 
       ws.onmessage = (e) => {
         if (cancelled) return;
         try {
           const message: MarketLiveMessage = JSON.parse(e.data);
           if (message.type === "market_snapshot" && message.payload) {
+            overviewCache.set(cacheKey, { payload: message.payload, fetchedAt: Date.now() });
             setError(null);
             setOverview(message.payload);
-            return;
           }
-          const patch = message as Partial<MarketOverview>;
-          setError(null);
-          setOverview((prev) => (prev ? { ...prev, ...patch } : prev));
         } catch {
           // ignore malformed messages
         }
       };
 
       ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
         if (!cancelled) {
           setLive(false);
-          // reconnect after 5 seconds
-          reconnectTimer = setTimeout(connectWs, 5000);
+          scheduleReconnect();
         }
       };
 
@@ -102,6 +127,24 @@ export function useMarketOverview(homeMarket = "US") {
         ws.close();
       };
     };
+
+    const handleVisibilityChange = () => {
+      if (cancelled || typeof document === "undefined") {
+        return;
+      }
+      if (document.visibilityState === "hidden" && reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        return;
+      }
+      if (document.visibilityState === "visible" && !wsRef.current && !reconnectTimer) {
+        connectWs();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
 
     void fetchOverview().then(() => {
       if (!cancelled) {
@@ -112,6 +155,9 @@ export function useMarketOverview(homeMarket = "US") {
     return () => {
       cancelled = true;
       abortController.abort();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
       if (connectTimer) clearTimeout(connectTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
