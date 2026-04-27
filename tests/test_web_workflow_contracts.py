@@ -1130,6 +1130,27 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["result"]["summary"]["symbols"], ["AAPL"])
         create_run.assert_not_called()
 
+    def test_backtest_clamps_intraday_window_to_provider_retention(self):
+        with patch("tradingagents.web.workflow_service.get_intraday_bars", return_value=_make_intraday_bars()) as intraday_mock, patch(
+            "tradingagents.web.workflow_service.run_backtest",
+            return_value=_FakeBacktestResult("AAPL", 52_500.0),
+        ):
+            resp = self.client.post(
+                "/api/backtests",
+                json={
+                    "symbols": ["AAPL"],
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-04-23",
+                },
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["result"]["summary"]["effective_start_date"], "2026-02-22")
+        self.assertTrue(body["result"]["summary"]["start_date_clamped"])
+        self.assertEqual(intraday_mock.call_args_list[0].args[2], "2026-02-22")
+        self.assertEqual(intraday_mock.call_args_list[1].args[2], "2026-02-22")
+
     def test_get_backtest_detail_returns_stored_record_and_404_for_unknown(self):
         from tradingagents.web.storage import get_workflow_store
 

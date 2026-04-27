@@ -4,6 +4,12 @@ import { WorkflowProvider, useWorkflow } from "../contexts/WorkflowContext";
 import { BacktestScreen } from "./BacktestScreen";
 import type { TradePlan } from "../types";
 
+function daysAgoIso(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split("T")[0];
+}
+
 const chartMock = vi.hoisted(() =>
   vi.fn((_props: Record<string, unknown>) => <div data-testid="trading-chart" />)
 );
@@ -132,6 +138,12 @@ describe("BacktestScreen", () => {
     act(() => { fireEvent.click(screen.getByRole("button", { name: /set strategy/i })); });
     expect(screen.getByLabelText(/start date/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /run backtest/i })).toBeInTheDocument();
+  });
+
+  it("defaults the start date to the intraday retention window", () => {
+    renderScreen();
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /set strategy/i })); });
+    expect(screen.getByLabelText(/start date/i)).toHaveValue(daysAgoIso(60));
   });
 
   it("execution mode field shows quant_strict", () => {

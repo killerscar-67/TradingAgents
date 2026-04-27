@@ -7,6 +7,14 @@ import { apiUrl } from "../apiBase";
 import type { BacktestRun } from "../types";
 import styles from "./BacktestScreen.module.css";
 
+const INTRADAY_BACKTEST_DEFAULT_LOOKBACK_DAYS = 60;
+
+function daysAgoIso(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split("T")[0];
+}
+
 interface BacktestTradePayload {
   symbol: string;
   direction: string;
@@ -200,11 +208,7 @@ function mapBacktestResponseToRun(data: BacktestApiResponse): BacktestRun {
 
 export function BacktestScreen() {
   const { strategyId, tradePlan, backtestId, setBacktestId, autoAdvance, setScreen } = useWorkflow();
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    d.setFullYear(d.getFullYear() - 1);
-    return d.toISOString().split("T")[0];
-  });
+  const [startDate, setStartDate] = useState(() => daysAgoIso(INTRADAY_BACKTEST_DEFAULT_LOOKBACK_DAYS));
   const [endDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [run, setRun] = useState<BacktestRun | null>(null);
   const [loading, setLoading] = useState(false);

@@ -45,6 +45,7 @@ _calendar_cache_disk_loaded = False
 _chart_response_cache: Dict[Tuple[str, str, int, Optional[int], Optional[str], str], Dict[str, Any]] = {}
 _chart_response_cache_lock = threading.Lock()
 _CHART_CACHE_TTL_SECONDS = 30.0
+_BACKTEST_INTRADAY_MAX_LOOKBACK_DAYS = 60
 
 
 class CalendarProviderCooldownError(RuntimeError):
@@ -2180,6 +2181,19 @@ def _aggregate_equity_curves(results: List[Dict[str, Any]], per_symbol_equity: f
     return aggregate
 
 
+def _clamp_intraday_backtest_start_date(start_date: str, end_date: str) -> tuple[str, bool]:
+    start_dt = datetime.fromisoformat(start_date).date()
+    end_dt = datetime.fromisoformat(end_date).date()
+    if end_dt <= start_dt:
+        return start_date, False
+
+    max_window_start = end_dt - timedelta(days=_BACKTEST_INTRADAY_MAX_LOOKBACK_DAYS)
+    if start_dt >= max_window_start:
+        return start_date, False
+
+    return max_window_start.isoformat(), True
+
+
 def _strategy_trade_allocations(
     strategy: Dict[str, Any],
     portfolio_size: float,
@@ -2236,6 +2250,11 @@ def run_backtest_for_strategy(request: Dict[str, Any], store, settings: Dict[str
     if not symbols:
         raise ValueError("Backtest requires at least one symbol or a saved strategy with trades")
 
+    effective_start_date, start_date_clamped = _clamp_intraday_backtest_start_date(
+        payload["start_date"],
+        payload["end_date"],
+    )
+
     config = dict(payload.get("config", {}))
     walkforward_n_folds = int(config.get("walkforward_n_folds", 0) or 0)
     walkforward_in_sample_ratio = float(config.get("walkforward_in_sample_ratio", 0.7))
@@ -2253,8 +2272,8 @@ def run_backtest_for_strategy(request: Dict[str, Any], store, settings: Dict[str
     for index, symbol in enumerate(symbols):
         events.append({"type": "backtest_symbol", "backtest_id": backtest["backtest_id"], "symbol": symbol, "status": "running", "timestamp": _utc_now()})
         store.update_backtest_run(backtest["backtest_id"], status="running", events=events)
-        bars_15m = get_intraday_bars(symbol, "15m", payload["start_date"], payload["end_date"])
-        bars_4h = get_intraday_bars(symbol, "4h", payload["start_date"], payload["end_date"])
+        bars_15m = get_intraday_bars(symbol, "15m", effective_start_date, payload["end_date"])
+        bars_4h = get_intraday_bars(symbol, "4h", effective_start_date, payload["end_date"])
         symbol_cfg = dict(config)
         if strategy_trades:
             trade_plan = strategy_trades[index]
@@ -2314,6 +2333,8 @@ def run_backtest_for_strategy(request: Dict[str, Any], store, settings: Dict[str
             "symbols": symbols,
             "source": "saved_strategy" if strategy_trades else "symbol_list",
             "idle_cash": idle_cash,
+            "effective_start_date": effective_start_date,
+            "start_date_clamped": start_date_clamped,
         },
         "equity_curve": aggregate_equity_curve,
         "per_symbol": per_symbol_results,
