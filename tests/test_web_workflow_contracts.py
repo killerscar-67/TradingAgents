@@ -314,6 +314,179 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["calendar_status"]["state"], "unavailable")
         self.assertIn("Economic calendar unavailable", body["calendar_status"]["message"])
 
+    def test_market_overview_reuses_cached_economic_calendar_during_rate_limit(self):
+        from tradingagents.web import workflow_service
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "TRADINGAGENTS_WEB_CALENDAR_CACHE": str(Path(temp_dir) / "calendar-cache.json"),
+                "FMP_API_KEY": "test-key",
+                "FINNHUB_API_KEY": "test-key",
+            },
+            clear=False,
+        ), patch.dict("tradingagents.web.workflow_service._calendar_response_cache", {}, clear=True), patch.dict(
+            "tradingagents.web.workflow_service._calendar_rate_limit_cooldowns",
+            {},
+            clear=True,
+        ), patch(
+            "tradingagents.web.workflow_service._download_daily_history",
+            side_effect=self._mock_market_download,
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            side_effect=[
+                [{"timestamp": "2026-04-29T18:00:00Z", "title": "Fed Interest Rate Decision", "impact": "high", "region": "US"}],
+                HTTPError("https://example.test", 429, "Too Many Requests", hdrs=None, fp=None),
+            ],
+        ) as mock_calendar_fetch:
+            workflow_service._calendar_cache_disk_loaded = False
+            first = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+            for cached in workflow_service._calendar_response_cache.values():
+                cached["fetched_at"] = -1000.0
+            second = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        first_body = first.json()
+        second_body = second.json()
+        self.assertEqual(mock_calendar_fetch.call_count, 2)
+        self.assertEqual(first_body["calendar_status"]["state"], "ready")
+        self.assertEqual(second_body["calendar_status"]["state"], "ready")
+        self.assertEqual(second_body["events"][0]["name"], "Fed Interest Rate Decision")
+
+    def test_market_overview_restores_calendar_snapshot_from_disk_cache_after_restart(self):
+        from tradingagents.web import workflow_service
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "TRADINGAGENTS_WEB_CALENDAR_CACHE": str(Path(temp_dir) / "calendar-cache.json"),
+                "FMP_API_KEY": "test-key",
+                "FINNHUB_API_KEY": "test-key",
+            },
+            clear=False,
+        ), patch.dict("tradingagents.web.workflow_service._calendar_response_cache", {}, clear=True), patch.dict(
+            "tradingagents.web.workflow_service._calendar_rate_limit_cooldowns",
+            {},
+            clear=True,
+        ), patch(
+            "tradingagents.web.workflow_service._download_daily_history",
+            side_effect=self._mock_market_download,
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            side_effect=[
+                [{"timestamp": "2026-04-29T18:00:00Z", "title": "Fed Interest Rate Decision", "impact": "high", "region": "US"}],
+                AssertionError("provider should not be called after disk cache restore"),
+            ],
+        ) as mock_calendar_fetch:
+            workflow_service._calendar_cache_disk_loaded = False
+            first = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+            workflow_service._calendar_response_cache.clear()
+            workflow_service._calendar_rate_limit_cooldowns.clear()
+            workflow_service._calendar_cache_disk_loaded = False
+            second = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mock_calendar_fetch.call_count, 1)
+        self.assertEqual(second.json()["calendar_status"]["state"], "ready")
+        self.assertEqual(second.json()["events"][0]["name"], "Fed Interest Rate Decision")
+
+    def test_market_overview_skips_provider_refresh_during_calendar_cooldown(self):
+        from tradingagents.web import workflow_service
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                "TRADINGAGENTS_WEB_CALENDAR_CACHE": str(Path(temp_dir) / "calendar-cache.json"),
+                "FMP_API_KEY": "test-key",
+                "FINNHUB_API_KEY": "test-key",
+            },
+            clear=False,
+        ), patch.dict("tradingagents.web.workflow_service._calendar_response_cache", {}, clear=True), patch.dict(
+            "tradingagents.web.workflow_service._calendar_rate_limit_cooldowns",
+            {},
+            clear=True,
+        ), patch(
+            "tradingagents.web.workflow_service._download_daily_history",
+            side_effect=self._mock_market_download,
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            side_effect=HTTPError("https://example.test", 429, "Too Many Requests", hdrs=None, fp=None),
+        ) as mock_calendar_fetch:
+            workflow_service._calendar_cache_disk_loaded = False
+            first = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+            second = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(mock_calendar_fetch.call_count, 1)
+        self.assertEqual(first.json()["calendar_status"]["state"], "unavailable")
+        self.assertEqual(second.json()["calendar_status"]["state"], "unavailable")
+        self.assertIn("cooling down", second.json()["calendar_status"]["message"])
+
+    def test_market_overview_ignores_persisted_empty_finance_cache_entries(self):
+        from tradingagents.web import workflow_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "calendar-cache.json"
+            cache_path.write_text(
+                json.dumps(
+                    {
+                        "entries": {
+                            "financial|finnhub|US|2026-03-01|2026-06-01": {
+                                "events": [],
+                                "fetched_at": 9999999999,
+                            }
+                        },
+                        "cooldowns": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "TRADINGAGENTS_WEB_CALENDAR_CACHE": str(cache_path),
+                    "FMP_API_KEY": "test-key",
+                    "FINNHUB_API_KEY": "test-key",
+                },
+                clear=False,
+            ), patch.dict("tradingagents.web.workflow_service._calendar_response_cache", {}, clear=True), patch.dict(
+                "tradingagents.web.workflow_service._calendar_rate_limit_cooldowns",
+                {},
+                clear=True,
+            ), patch(
+                "tradingagents.web.workflow_service._download_daily_history",
+                side_effect=self._mock_market_download,
+            ), patch(
+                "tradingagents.web.workflow_service._fetch_calendar_events",
+                return_value=[],
+            ), patch(
+                "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+                return_value=[
+                    {"date": "2026-05-20", "symbol": "NVDA", "name": "Earnings", "event_type": "earnings"},
+                    {"date": "2026-05-28", "symbol": "COST", "name": "Earnings", "event_type": "earnings"},
+                ],
+            ) as mock_finance_fetch:
+                workflow_service._calendar_cache_disk_loaded = False
+                resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-27")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(mock_finance_fetch.call_count, 1)
+        self.assertEqual(body["finance_calendar_status"]["state"], "ready")
+        self.assertEqual([event["symbol"] for event in body["finance_events"]], ["NVDA", "COST"])
+
     def test_market_overview_accepts_yfinance_multiindex_history(self):
         def mock_multiindex_download(symbols, start, end):
             histories = {}
@@ -454,13 +627,15 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_market_live_websocket_streams_multiple_snapshots(self):
         payload = _screening_regime("US")
-        with patch("tradingagents.web.routes.workflow.build_market_overview", return_value=payload):
+        with patch("tradingagents.web.routes.workflow.build_market_overview", return_value=payload) as mock_overview:
             with self.client.websocket_connect("/api/market/live?home_market=US&interval_seconds=0.01") as ws:
                 first = ws.receive_json()
                 second = ws.receive_json()
         self.assertEqual(first["type"], "market_snapshot")
         self.assertEqual(second["type"], "market_snapshot")
         self.assertEqual(first["payload"]["home_market"], "US")
+        self.assertGreaterEqual(mock_overview.call_count, 2)
+        self.assertTrue(all(call.args[3] is False for call in mock_overview.call_args_list))
 
     def test_screening_and_basket_persist_ranked_results(self):
         def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):

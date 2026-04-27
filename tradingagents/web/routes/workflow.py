@@ -261,6 +261,7 @@ async def stream_market_live(websocket: WebSocket) -> None:
                 websocket.query_params.get("home_market", "US"),
                 websocket.query_params.get("trade_date"),
                 settings,
+                False,
             )
             await websocket.send_json(
                 {

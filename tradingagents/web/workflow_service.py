@@ -8,6 +8,8 @@ import logging
 import threading
 import calendar
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from time import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -17,6 +19,7 @@ import pandas as pd
 import yfinance as yf
 import yfinance.utils as yf_utils
 
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.interface import get_intraday_bars
 from tradingagents.quant.backtest import run_backtest, run_trade_plan_backtest
 from tradingagents.quant.contracts import EntryEngine, EntrySignal
@@ -29,6 +32,22 @@ _cancelled_batches: set = set()
 _cancelled_lock = threading.Lock()
 _thread_cls = threading.Thread  # test-injectable; patching threading.Thread globally breaks anyio
 _LOGGER = logging.getLogger(__name__)
+_calendar_response_cache: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
+_calendar_rate_limit_cooldowns: Dict[Tuple[str, str, str, str, str], float] = {}
+_calendar_response_cache_lock = threading.Lock()
+_CALENDAR_CACHE_TTL_SECONDS = 900.0
+_CALENDAR_EMPTY_CACHE_TTL_SECONDS = 60.0
+_CALENDAR_RATE_LIMIT_COOLDOWN_SECONDS = 600.0
+_calendar_cache_disk_loaded = False
+
+
+class CalendarProviderCooldownError(RuntimeError):
+    def __init__(self, provider_name: str, retry_after_seconds: float):
+        self.provider_name = provider_name
+        self.retry_after_seconds = max(int(retry_after_seconds), 1)
+        super().__init__(
+            f"{provider_name} rate-limited; cooling down for {self.retry_after_seconds}s before the next refresh attempt"
+        )
 
 
 def cancel_batch(batch_id: str) -> None:
@@ -775,6 +794,156 @@ def _month_window(as_of_date: str) -> Tuple[str, str]:
     return previous_month_start.isoformat(), (next_month_end + timedelta(days=1)).isoformat()
 
 
+def _calendar_cache_path() -> Path:
+    configured = os.getenv("TRADINGAGENTS_WEB_CALENDAR_CACHE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    base_dir = Path(DEFAULT_CONFIG.get("data_cache_dir", os.path.join(Path.home(), ".tradingagents", "cache"))).expanduser()
+    return base_dir / "web" / "calendar_cache.json"
+
+
+def _serialize_calendar_cache_key(cache_key: Tuple[str, str, str, str, str]) -> str:
+    return "|".join(cache_key)
+
+
+def _deserialize_calendar_cache_key(raw_key: str) -> Optional[Tuple[str, str, str, str, str]]:
+    parts = raw_key.split("|", 4)
+    if len(parts) != 5:
+        return None
+    return tuple(parts)  # type: ignore[return-value]
+
+
+def _persist_calendar_cache_locked() -> None:
+    cache_path = _calendar_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "entries": {
+            _serialize_calendar_cache_key(cache_key): {
+                "events": list(entry.get("events", [])),
+                "fetched_at": float(entry.get("fetched_at", 0.0)),
+            }
+            for cache_key, entry in _calendar_response_cache.items()
+            if entry.get("events")
+        },
+        "cooldowns": {
+            _serialize_calendar_cache_key(cache_key): float(cooldown_until)
+            for cache_key, cooldown_until in _calendar_rate_limit_cooldowns.items()
+        },
+    }
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temp_path.replace(cache_path)
+
+
+def _ensure_calendar_cache_loaded() -> None:
+    global _calendar_cache_disk_loaded
+    with _calendar_response_cache_lock:
+        if _calendar_cache_disk_loaded:
+            return
+        _calendar_cache_disk_loaded = True
+        cache_path = _calendar_cache_path()
+        if not cache_path.exists():
+            return
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            _LOGGER.warning("Failed to load calendar cache from disk: %s", exc)
+            return
+
+        entries = payload.get("entries", {}) if isinstance(payload, dict) else {}
+        for raw_key, entry in entries.items():
+            cache_key = _deserialize_calendar_cache_key(str(raw_key))
+            if not cache_key or not isinstance(entry, dict):
+                continue
+            events = entry.get("events", [])
+            fetched_at = entry.get("fetched_at", 0.0)
+            if isinstance(events, list) and events:
+                _calendar_response_cache[cache_key] = {
+                    "events": list(events),
+                    "fetched_at": float(fetched_at or 0.0),
+                }
+
+        cooldowns = payload.get("cooldowns", {}) if isinstance(payload, dict) else {}
+        now = time()
+        for raw_key, cooldown_until in cooldowns.items():
+            cache_key = _deserialize_calendar_cache_key(str(raw_key))
+            if not cache_key:
+                continue
+            try:
+                parsed = float(cooldown_until)
+            except (TypeError, ValueError):
+                continue
+            if parsed > now:
+                _calendar_rate_limit_cooldowns[cache_key] = parsed
+
+
+def _store_calendar_payload(cache_key: Tuple[str, str, str, str, str], events: List[Dict[str, Any]], fetched_at: float) -> None:
+    with _calendar_response_cache_lock:
+        _calendar_response_cache[cache_key] = {
+            "events": list(events),
+            "fetched_at": fetched_at,
+        }
+        _calendar_rate_limit_cooldowns.pop(cache_key, None)
+        _persist_calendar_cache_locked()
+
+
+def _set_calendar_cooldown(cache_key: Tuple[str, str, str, str, str], cooldown_until: float) -> None:
+    with _calendar_response_cache_lock:
+        _calendar_rate_limit_cooldowns[cache_key] = cooldown_until
+        _persist_calendar_cache_locked()
+
+
+def _get_calendar_cooldown_remaining(cache_key: Tuple[str, str, str, str, str], now: float) -> Optional[float]:
+    _ensure_calendar_cache_loaded()
+    with _calendar_response_cache_lock:
+        cooldown_until = _calendar_rate_limit_cooldowns.get(cache_key)
+        if cooldown_until is None:
+            return None
+        remaining = cooldown_until - now
+        if remaining <= 0:
+            _calendar_rate_limit_cooldowns.pop(cache_key, None)
+            _persist_calendar_cache_locked()
+            return None
+        return remaining
+
+
+def _get_cached_calendar_payload(
+    cache_key: Tuple[str, str, str, str, str],
+    fetcher,
+) -> List[Dict[str, Any]]:
+    _ensure_calendar_cache_loaded()
+    now = time()
+    with _calendar_response_cache_lock:
+        cached = _calendar_response_cache.get(cache_key)
+        if cached:
+            ttl_seconds = _CALENDAR_CACHE_TTL_SECONDS if cached.get("events") else _CALENDAR_EMPTY_CACHE_TTL_SECONDS
+            if (now - float(cached.get("fetched_at", 0.0))) < ttl_seconds:
+                return list(cached.get("events", []))
+
+    cooldown_remaining = _get_calendar_cooldown_remaining(cache_key, now)
+    if cooldown_remaining is not None:
+        raise CalendarProviderCooldownError(cache_key[1], cooldown_remaining)
+
+    try:
+        events = fetcher()
+    except HTTPError as exc:
+        if exc.code == 429:
+            _set_calendar_cooldown(cache_key, now + _CALENDAR_RATE_LIMIT_COOLDOWN_SECONDS)
+        raise
+
+    _store_calendar_payload(cache_key, list(events), now)
+    return list(events)
+
+
+def _peek_cached_calendar_payload(cache_key: Tuple[str, str, str, str, str]) -> Optional[List[Dict[str, Any]]]:
+    _ensure_calendar_cache_loaded()
+    with _calendar_response_cache_lock:
+        cached = _calendar_response_cache.get(cache_key)
+        if not cached:
+            return None
+        return list(cached.get("events", []))
+
+
 def _calendar_status(
     provider: str,
     events: List[Dict[str, Any]],
@@ -814,7 +983,12 @@ def _calendar_status(
     }
 
 
-def get_market_overview(home_market: str, trade_date: Optional[str], settings: Dict[str, Any]) -> Dict[str, Any]:
+def get_market_overview(
+    home_market: str,
+    trade_date: Optional[str],
+    settings: Dict[str, Any],
+    include_calendars: bool = True,
+) -> Dict[str, Any]:
     requested_market = (home_market or "").upper()
     settings_market = str(settings.get("home_market", "US") or "US").upper()
     resolved_market = requested_market if requested_market in MARKET_DEFINITIONS else settings_market
@@ -898,33 +1072,57 @@ def get_market_overview(home_market: str, trade_date: Optional[str], settings: D
     month_start, month_end = _month_window(as_of_date)
     calendar_unavailable_message = None
     finance_calendar_unavailable_message = None
+    economic_cache_key = ("economic", str(calendar_provider), resolved_market, month_start, month_end)
+    financial_cache_key = ("financial", str(finance_calendar_provider), resolved_market, month_start, month_end)
     try:
-        events = _normalize_calendar_events(
-            _fetch_calendar_events(
-                calendar_provider,
-                [resolved_market],
-                month_start,
-                month_end,
+        if include_calendars:
+            events = _get_cached_calendar_payload(
+                economic_cache_key,
+                lambda: _normalize_calendar_events(
+                    _fetch_calendar_events(
+                        calendar_provider,
+                        [resolved_market],
+                        month_start,
+                        month_end,
+                    )
+                )
             )
-        )
+        else:
+            events = _peek_cached_calendar_payload(economic_cache_key) or []
     except Exception as exc:
-        _LOGGER.warning("Economic calendar unavailable: %s", exc)
-        events = []
-        calendar_unavailable_message = f"Economic calendar unavailable. {exc}"
+        cached_events = _peek_cached_calendar_payload(economic_cache_key)
+        if cached_events:
+            _LOGGER.warning("Economic calendar provider failed; serving stale cached events instead: %s", exc)
+            events = cached_events
+        else:
+            _LOGGER.warning("Economic calendar unavailable with no cached fallback: %s", exc)
+            events = []
+            calendar_unavailable_message = f"Economic calendar unavailable. {exc}"
 
     try:
-        finance_events = _normalize_finance_calendar_events(
-            _fetch_finance_calendar_events(
-                finance_calendar_provider,
-                MARKET_DEFINITIONS[resolved_market]["universe"],
-                month_start,
-                month_end,
+        if include_calendars:
+            finance_events = _get_cached_calendar_payload(
+                financial_cache_key,
+                lambda: _normalize_finance_calendar_events(
+                    _fetch_finance_calendar_events(
+                        finance_calendar_provider,
+                        MARKET_DEFINITIONS[resolved_market]["universe"],
+                        month_start,
+                        month_end,
+                    )
+                )
             )
-        )
+        else:
+            finance_events = _peek_cached_calendar_payload(financial_cache_key) or []
     except Exception as exc:
-        _LOGGER.warning("Financial calendar unavailable: %s", exc)
-        finance_events = []
-        finance_calendar_unavailable_message = f"Financial calendar unavailable. {exc}"
+        cached_finance_events = _peek_cached_calendar_payload(financial_cache_key)
+        if cached_finance_events:
+            _LOGGER.warning("Financial calendar provider failed; serving stale cached events instead: %s", exc)
+            finance_events = cached_finance_events
+        else:
+            _LOGGER.warning("Financial calendar unavailable with no cached fallback: %s", exc)
+            finance_events = []
+            finance_calendar_unavailable_message = f"Financial calendar unavailable. {exc}"
 
     calendar_status = _calendar_status(
         str(calendar_provider),
