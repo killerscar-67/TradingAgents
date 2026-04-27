@@ -1,10 +1,10 @@
 import hashlib
+import json
 import os
 import pickle
-import tempfile
 import threading
-import time
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Optional
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -31,9 +31,57 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .intraday import get_intraday_bars as _get_intraday_bars_yfinance
 
 # Configuration and routing logic
 from .config import get_config
+
+
+_CACHE_LOCKS = {}
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_key(method: str, vendor: str, args, kwargs) -> str:
+    payload = {
+        "method": method,
+        "vendor": vendor,
+        "args": args,
+        "kwargs": kwargs,
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _cache_path(cache_dir: str, key: str) -> Path:
+    return Path(cache_dir) / "tool_cache" / f"{key}.pkl"
+
+
+def _get_cache_lock(key: str) -> threading.Lock:
+    with _CACHE_LOCKS_GUARD:
+        if key not in _CACHE_LOCKS:
+            _CACHE_LOCKS[key] = threading.Lock()
+        return _CACHE_LOCKS[key]
+
+
+def _load_cached_result(path: Path):
+    try:
+        if not path.exists():
+            return False, None
+        with path.open("rb") as handle:
+            return True, pickle.load(handle)
+    except Exception:
+        return False, None
+
+
+def _save_cached_result(path: Path, value) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with tmp_path.open("wb") as handle:
+            pickle.dump(value, handle)
+        os.replace(tmp_path, path)
+    except Exception:
+        return
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -67,7 +115,13 @@ TOOLS_CATEGORIES = {
             "get_global_news",
             "get_insider_transactions",
         ]
-    }
+    },
+    "intraday_data": {
+        "description": "Intraday OHLCV bar data (15m, 4h)",
+        "tools": [
+            "get_intraday_bars",
+        ]
+    },
 }
 
 VENDOR_LIST = [
@@ -124,6 +178,10 @@ VENDOR_METHODS = {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
     },
+    # intraday_data
+    "get_intraday_bars": {
+        "yfinance": _get_intraday_bars_yfinance,
+    },
 }
 
 def get_category_for_method(method: str) -> str:
@@ -148,66 +206,9 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
-# ---------------------------------------------------------------------------
-# Disk cache for vendor calls.
-# Multiple analysts (and re-runs on the same trade_date) frequently request
-# identical data; a process-local lock plus atomic file writes keep the cache
-# safe under the parallel-analyst node introduced in setup.py.
-# ---------------------------------------------------------------------------
-
-_DATA_CACHE_TTL_SECONDS = 24 * 60 * 60
-_cache_locks: dict = {}
-_cache_locks_guard = threading.Lock()
-
-
-def _cache_lock_for(key: str) -> threading.Lock:
-    with _cache_locks_guard:
-        lock = _cache_locks.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _cache_locks[key] = lock
-        return lock
-
-
-def _make_cache_key(method: str, args, kwargs) -> str:
-    raw = repr((method, args, sorted(kwargs.items())))
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
-
-
-def _load_cached(cache_path: str):
-    try:
-        if not os.path.exists(cache_path):
-            return None
-        if os.path.getmtime(cache_path) + _DATA_CACHE_TTL_SECONDS < time.time():
-            return None  # expired
-        with open(cache_path, "rb") as f:
-            return pickle.load(f)
-    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ValueError):
-        return None
-
-
-def _store_cached(cache_path: str, value) -> None:
-    cache_dir = os.path.dirname(cache_path)
-    try:
-        os.makedirs(cache_dir, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(prefix=".cache_", dir=cache_dir)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                pickle.dump(value, f)
-            os.replace(tmp_path, cache_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except Exception:
-        # Cache writes are best-effort; never fail the calling analyst.
-        pass
-
-
-def _vendor_call(method: str, *args, **kwargs):
-    """Execute the actual vendor call with fallback. Cache-free."""
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to appropriate vendor implementation with fallback support."""
+    config = get_config()
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
@@ -228,6 +229,28 @@ def _vendor_call(method: str, *args, **kwargs):
 
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
+        cache_enabled = bool(config.get("data_cache_enabled", True))
+        cache_dir = config.get("data_cache_dir")
+        refresh_cache = bool(config.get("data_cache_refresh", False))
+
+        if cache_enabled and cache_dir:
+            key = _cache_key(method, vendor, args, kwargs)
+            path = _cache_path(cache_dir, key)
+            lock = _get_cache_lock(key)
+
+            with lock:
+                if not refresh_cache:
+                    cache_hit, cached_value = _load_cached_result(path)
+                    if cache_hit:
+                        return cached_value
+
+                try:
+                    result = impl_func(*args, **kwargs)
+                except AlphaVantageRateLimitError:
+                    continue  # Only rate limits trigger fallback
+
+                _save_cached_result(path, result)
+                return result
 
         try:
             return impl_func(*args, **kwargs)
@@ -237,34 +260,40 @@ def _vendor_call(method: str, *args, **kwargs):
     raise RuntimeError(f"No available vendor for '{method}'")
 
 
-def route_to_vendor(method: str, *args, **kwargs):
-    """Route method calls to vendor implementations with disk caching and fallback.
+def get_intraday_bars(
+    symbol: str,
+    interval: str,
+    start: str,
+    end: str,
+    as_of=None,
+    session: Optional[str] = None,
+    cache_dir=None,
+    refresh_cache: bool = False,
+):
+    """Route intraday bar requests through the configured vendor.
 
-    Cache key is hashed from (method, args, kwargs); since callers always pass
-    a date arg, results for one trade_date never leak into another. Cache TTL
-    is 24h; set ``data_cache_dir`` to "" or None in config to disable.
+    Uses the ``intraday_data`` vendor from config (default: ``yfinance``).
+    All arguments are forwarded to the underlying vendor implementation.
+    See :func:`tradingagents.dataflows.intraday.get_intraday_bars` for full
+    parameter documentation.
     """
     config = get_config()
-    cache_dir = config.get("data_cache_dir") or ""
-
-    if not cache_dir:
-        return _vendor_call(method, *args, **kwargs)
-
-    key = _make_cache_key(method, args, kwargs)
-    cache_path = os.path.join(cache_dir, "vendor", f"{key}.pkl")
-
-    cached = _load_cached(cache_path)
-    if cached is not None:
-        return cached
-
-    # Serialize duplicate concurrent fetches for the same key (parallel
-    # analyst node may issue identical requests simultaneously).
-    with _cache_lock_for(key):
-        cached = _load_cached(cache_path)
-        if cached is not None:
-            return cached
-
-        result = _vendor_call(method, *args, **kwargs)
-        if result is not None:
-            _store_cached(cache_path, result)
-        return result
+    resolved_session = session or config.get("intraday_default_session", "regular")
+    resolved_cache_dir = cache_dir or config.get("intraday_cache_dir")
+    resolved_refresh_cache = refresh_cache or bool(config.get("intraday_refresh_cache", False))
+    vendor = config.get("data_vendors", {}).get("intraday_data", "yfinance")
+    # tool-level override takes precedence
+    vendor = config.get("tool_vendors", {}).get("get_intraday_bars", vendor)
+    impl = VENDOR_METHODS["get_intraday_bars"].get(vendor)
+    if impl is None:
+        raise NotImplementedError(f"Vendor {vendor!r} is not available for get_intraday_bars")
+    return impl(
+        symbol=symbol,
+        interval=interval,
+        start=start,
+        end=end,
+        as_of=as_of,
+        session=resolved_session,
+        cache_dir=resolved_cache_dir,
+        refresh_cache=resolved_refresh_cache,
+    )

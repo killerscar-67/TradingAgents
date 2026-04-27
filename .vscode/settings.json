@@ -1,0 +1,5 @@
+{
+    "python.defaultInterpreterPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
+    "python.pythonPath": "/Users/josephwong/TradingAgents/tradingagent_venv/bin/python",
+    "python-envs.defaultEnvManager": "ms-python.python:venv"
+}

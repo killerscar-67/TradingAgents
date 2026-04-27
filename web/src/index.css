@@ -1,0 +1,102 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+:root {
+  /* Typography */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+
+  /* Surface scale */
+  --surface-0: #0f1117;
+  --surface-1: #0a0d14;
+  --surface-2: #161b27;
+  --surface-3: #1e2433;
+  --surface-border: #1e293b;
+  --surface-border-strong: #334155;
+
+  /* Text scale */
+  --text-hi: #f8fafc;
+  --text-md: #e2e8f0;
+  --text-lo: #94a3b8;
+  --text-muted: #64748b;
+
+  /* Status palette */
+  --status-ok: #4ade80;
+  --status-ok-bg: #052e16;
+  --status-ok-border: #047857;
+  --status-warn: #fbbf24;
+  --status-warn-bg: #422006;
+  --status-warn-border: #92400e;
+  --status-err: #f87171;
+  --status-err-bg: #450a0a;
+  --status-err-border: #7f1d1d;
+  --status-info: #60a5fa;
+  --status-info-bg: #172554;
+  --status-info-border: #1d4ed8;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+/* Accessible focus ring — all interactive elements */
+:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+body {
+  margin: 0;
+  background: #0f1117;
+  color: #e2e8f0;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+/* Markdown content inside ReportTabs */
+.content h1, .content h2, .content h3 {
+  color: #f8fafc;
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+}
+
+.content p {
+  margin: 0.6em 0;
+}
+
+.content ul, .content ol {
+  padding-left: 1.4em;
+  margin: 0.4em 0;
+}
+
+.content code {
+  background: #1e293b;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+
+.content blockquote {
+  border-left: 3px solid #334155;
+  margin: 0;
+  padding-left: 12px;
+  color: #94a3b8;
+}

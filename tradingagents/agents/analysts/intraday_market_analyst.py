@@ -168,8 +168,9 @@ def create_intraday_market_analyst(llm):
             )
             if state.get("session_phase") in ("premarket", "postmarket", "closed"):
                 session_brief += (
-                    " NOTE: Outside regular trading hours. Use prior-session bars to "
-                    "frame a setup for the next open, or signal no_trade."
+                    " NOTE: Outside regular trading hours. Use extended-hours bars "
+                    "when available; if the market is closed, frame a setup for the "
+                    "next open or signal no_trade."
                 )
 
             prompt = ChatPromptTemplate.from_messages([

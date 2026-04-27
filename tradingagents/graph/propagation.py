@@ -39,7 +39,7 @@ class Propagator:
         fields stay empty. For daytrade mode, `trade_date` may be either a
         date string or a full ISO datetime; session context is resolved and
         the bar-loading date may walk back to the previous business day if
-        called outside RTH.
+        called outside extended hours.
         """
         state: Dict[str, Any] = {
             "messages": [("human", company_name)],
@@ -78,6 +78,7 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "analysis_brief": {},
         }
 
         if trading_style == "daytrade":

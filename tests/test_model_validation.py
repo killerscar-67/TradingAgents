@@ -10,16 +10,35 @@ class DummyLLMClient(BaseLLMClient):
     def __init__(self, provider: str, model: str):
         self.provider = provider
         super().__init__(model)
+        self._llm = object()
 
     def get_llm(self):
         self.warn_if_unknown_model()
-        return object()
+        return self._llm
 
     def validate_model(self) -> bool:
         return validate_model(self.provider, self.model)
 
 
 class ModelValidationTests(unittest.TestCase):
+    def test_base_client_invoke_proxies_to_underlying_llm(self):
+        class Runnable:
+            def __init__(self):
+                self.calls = []
+
+            def invoke(self, input, config=None, **kwargs):
+                self.calls.append((input, config, kwargs))
+                return {"content": "ok"}
+
+        client = DummyLLMClient("openai", "gpt-5.4")
+        runnable = Runnable()
+        client._llm = runnable
+
+        result = client.invoke("hello", config={"k": 1}, temperature=0.2)
+
+        self.assertEqual(result, {"content": "ok"})
+        self.assertEqual(runnable.calls, [("hello", {"k": 1}, {"temperature": 0.2})])
+
     def test_cli_catalog_models_are_all_validator_approved(self):
         for provider, models in get_known_models().items():
             if provider in ("ollama", "openrouter"):

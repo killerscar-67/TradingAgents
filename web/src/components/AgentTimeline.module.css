@@ -1,0 +1,64 @@
+.wrap {
+  padding: 16px 12px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.empty {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.phasePending,
+.phaseActive,
+.phaseDone {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.phasePending {
+  color: #475569;
+}
+
+.phaseActive {
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.phaseDone {
+  color: #475569;
+}
+
+.phaseIcon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  margin-top: 1px;
+  font-size: 11px;
+}
+
+.phaseActive .phaseIcon {
+  color: #f59e0b;
+}
+
+.phaseDone .phaseIcon {
+  color: #22c55e;
+}
+
+.phaseLabel {
+  flex: 1;
+}

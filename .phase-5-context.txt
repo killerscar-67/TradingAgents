@@ -1,0 +1,447 @@
+Project root: /Users/josephwong/TradingAgents
+Phase: 5
+
+Execution rules:
+- Use only this Python interpreter: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python
+- Keep changes deterministic and small
+- Produce handoff file docs/handoffs/phase-5.md
+- Run tests before completion: /Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
+
+Relevant prior handoffs (if any):
+--- /Users/josephwong/TradingAgents/docs/handoffs/phase-0.md ---
+# Phase 0 Handoff - Execution Contracts
+Agent: Copilot
+Date: 2026-04-21 (revised after review)
+
+## What was built
+- `tradingagents/quant/contracts.py`: added deterministic typed contracts and helpers for execution mode parsing, quant signal normalization, and order intent construction. Added `QuantSignalContract.from_dict()` for round-trip reconstruction from stored dicts. `from_raw` sets `score = float('-inf')` when `error` is present.
+- `tradingagents/quant/__init__.py`: exported contract symbols for import stability.
+- `tradingagents/default_config.py`: added `execution_mode` config key and safe integer env parsing for quant cache TTL.
+- `tradingagents/graph/trading_graph.py`: `propagate` now returns `(final_state, order_intent_dict)` where `order_intent_dict` includes `rating` and `blocked`. `build_order_intent` accepts an optional `quant_contract` parameter; when provided in `quant_strict` mode the live fetch is skipped, preserving determinism for universe flows. `propagate_prefiltered_universe` reconstructs the prefilter contract via `from_dict` and passes it through, eliminating duplicate quant API calls.
+- `tradingagents/graph/signal_processing.py`: strict mode now avoids LLM calls and uses deterministic rating extraction.
+- `tradingagents/graph/prefilter.py`: quant ranking now includes normalized `QuantSignalContract` payload in each scored item.
+- `cli/main.py`: added `--execution-mode` option with `parse_execution_mode()` validation and warning on unknown values. `run_prefiltered_universe_analysis` now delegates to `graph.propagate_prefiltered_universe` (single code path). Summary table includes a **Blocked** column so errored signals are never silently shown as actionable decisions.
+- `.vscode/settings.json`: fixed invalid JSON and kept single interpreter object.
+- `requirements.txt`: editable install entry (`.`) present.
+- `pyproject.toml`: `vectorbt` moved to `[project.optional-dependencies]` (`vectorbt` extras group); the `try/except` guard in `quant_tools.py` is now the correct defensive pattern for optional installs.
+- `tests/test_execution_contracts.py`: added unit tests for contracts and strict-mode signal processing behavior.
+
+## Contracts exposed to next phase
+- `QuantSignalContract` (`tradingagents/quant/contracts.py`): deterministic normalized quant signal schema. Use `from_raw()` to parse tool output; use `from_dict()` to reconstruct from stored payload.
+- `OrderIntentContract` (`tradingagents/quant/contracts.py`): typed execution intent schema with `source`/`execution_mode`/`blocked`/`reason`/`annotations`.
+- `ExecutionMode` (`tradingagents/quant/contracts.py`): `"llm_assisted" | "quant_strict"` mode contract.
+- `TradeRating` (`tradingagents/quant/contracts.py`): enum of `{BUY, OVERWEIGHT, HOLD, UNDERWEIGHT, SELL}`.
+- `TradingAgentsGraph.propagate(symbol, trade_date, quant_contract=None)` returns `(final_state, order_intent_dict)`.
+- `TradingAgentsGraph.build_order_intent(symbol, trade_date, text, quant_contract=None)` — canonical execution intent builder.
+
+## Config keys added
+- `execution_mode`: `str`, default `llm_assisted`, env override `TRADINGAGENTS_EXECUTION_MODE`.
+- `quant_prefilter_cache_ttl_days`: now read with safe parsing from env `TRADINGAGENTS_QUANT_CACHE_TTL_DAYS`.
+
+## Test command
+`/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v`
+
+Expected: 15 tests, all OK.
+
+## Known limitations / deferred decisions
+- Strict mode currently derives executable intent from `get_quant_signals` per symbol/date; no broker adapter wiring yet (planned for later phases).
+- `propagate` still executes the LLM graph for annotations/reporting; strict mode only changes order-intent derivation path.
+- `OrderIntentContract` is consumed as a dict in CLI/graph compatibility paths; dataclass-native handoff to broker layer is deferred to Phase 4.
+- DashScope aliasing has no log warning when env var substitution fires (LOW severity, no execution impact).
+
+## What the reviewer must focus on
+- Verify no LLM-dependent extraction is required to get strict-mode order intent.
+- Verify `execution_mode=quant_strict` is deterministic: prefilter contract is reused by `build_order_intent`, no second live fetch.
+- Verify `propagate` return value carries `blocked` and callers surface it.
+- Verify typed contracts are the stable interface for next phases and no duplicate contract schema exists elsewhere.
+- Verify CLI routes through `graph.propagate_prefiltered_universe` (not a separate direct call to `score_tickers_with_quant`).
+
+## Fix notes
+- 2026-04-21T16:21:34+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_162134-3bbaa4b.md
+- 2026-04-21T15:47:44+0800 -> docs/handoffs/history/phase-0/fix-notes-20260421_154744-3bbaa4b.md
+
+--- /Users/josephwong/TradingAgents/docs/handoffs/phase-1.md ---
+# Phase 1 Handoff — Intraday Data Foundation
+
+Agent: Copilot
+Date: 2026-04-21
+
+## What was built
+
+- `tradingagents/dataflows/intraday.py`: Intraday bar fetch module. Key public functions:
+    - `get_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance", cache_dir=None, refresh_cache=False) -> pd.DataFrame` — cached fetch; UTC-aware DatetimeIndex
+    - `fetch_intraday_bars(symbol, interval, start, end, as_of=None, session="regular", vendor="yfinance") -> pd.DataFrame` — no-cache variant
+    - `IntradayInterval = Literal["15m", "4h"]`, `IntradaySession = Literal["regular", "extended", "crypto"]`
+    - Internal helpers: `_align_session(df, session)`, `_enforce_no_lookahead(df, as_of)`, `_resample_1h_to_4h(df)`, `_cache_key(...)`, `_load_cache(path)`, `_save_cache(path, df)`
+    - 4h bars resampled from 1h (yfinance has no native 4h); session filter applied before resampling to avoid cross-session candles
+    - Cache key: SHA-256 of `{v, symbol, interval, start, end, session}`; `as_of` excluded (trimming applied post-load)
+    - Cache format: parquet under `~/.tradingagents/cache/intraday/`; requires `pyarrow`
+    - `alpha_vantage` vendor raises `NotImplementedError` (stub)
+- `tradingagents/dataflows/interface.py`: Added `"intraday_data"` category to `TOOLS_CATEGORIES`, `"get_intraday_bars"` entry in `VENDOR_METHODS`, and public `get_intraday_bars(symbol, interval, start, end, as_of, session, cache_dir, refresh_cache)` routing function that respects `config["data_vendors"]["intraday_data"]` and `config["tool_vendors"]["get_intraday_bars"]`
+- `tradingagents/default_config.py`: Added `intraday_cache_dir`, `intraday_default_session`, `intraday_refresh_cache` keys and `"intraday_data": "yfinance"` in `data_vendors`
+- `pyproject.toml`: Added `pyarrow>=14.0.0` to required dependencies (parquet engine; was absent from the venv)
+- `tests/test_intraday.py`: 13 acceptance tests — cache determinism, no-lookahead, session alignment, input validation
+
+## Contracts exposed to next phase
+
+- `get_intraday_bars(symbol, interval, start, end, as_of, session, vendor, cache_dir, refresh_cache) -> pd.DataFrame`: lives in `tradingagents.dataflows.intraday`. Returns UTC-aware DatetimeIndex DataFrame with columns `[Open, High, Low, Close, Volume]`. Enforces `as_of` cutoff (no-lookahead). Phase 2 quant engine should call this for regime and entry bar data.
+- `tradingagents.dataflows.interface.get_intraday_bars(...)`: vendor-routed wrapper; Phase 2 may call either form directly.
+
+## Config keys added
+
+- `intraday_cache_dir`: `str`, default `~/.tradingagents/cache/intraday`, env override `TRADINGAGENTS_INTRADAY_CACHE_DIR`
+- `intraday_default_session`: `str`, default `"regular"`, env override `TRADINGAGENTS_INTRADAY_SESSION`
+- `intraday_refresh_cache`: `bool`, default `False` (no env override; set programmatically)
+- `data_vendors["intraday_data"]`: `str`, default `"yfinance"` (override via `tool_vendors["get_intraday_bars"]`)
+
+## Test command
+
+```
+tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts -v
+```
+Expected: 33 tests, all OK
+
+## Known limitations / deferred decisions
+
+- `alpha_vantage` intraday vendor raises `NotImplementedError`; no alpha_vantage intraday endpoint exists in the current integration. Deferred to a later phase if needed.
+- yfinance 15m bars are limited to the last 60 days by the upstream API; no error is surfaced if `start` is older (empty DataFrame returned silently).
+- No TTL-based cache expiry for intraday cache. Freshness is controlled by bypassing cache reads **and writes** for live/current date ranges (`_is_live_end_date(end)` guard) and by `refresh_cache=True`.
+- `_align_session` regular-session open mask uses `hour > 9 or (hour == 9 and minute >= 30)`. yfinance 1h bars are labelled at the top of the hour; the bar covering 09:00–10:00 ET has `hour=9, minute=0` and is excluded. **Phase 2 callers must not rely on 4h candles capturing the 09:30 open** — the first included 1h bar is 10:00 ET.
+- 4h UTC-midnight bucket alignment yields at most 1 usable NYSE-session candle per day; the interval is best suited for crypto (24h) sessions.
+- `_is_live_end_date` compares naive date objects; `end` is treated as a UTC calendar date. Callers in UTC-ahead timezones passing a local-time date string may see unexpected live/historical classification.
+
+## What the reviewer must focus on
+
+- **Timezone correctness**: verify `_align_session` handles DST transitions (ET clocks back/forward) without dropping or duplicating bars at session boundaries
+- **Session boundary handling**: confirm regular session 09:30–16:00 ET filter is inclusive at open and exclusive at close (bar at exactly 16:00 ET should be excluded)
+- **Cache key collision safety**: confirm SHA-256 truncation to 20 hex chars (80 bits) is collision-safe for realistic ticker/interval/date combinations
+- **No stale bar data on market open**: confirm `_enforce_no_lookahead` strictly strips bars with `index >= as_of` (not `>`)
+- **Vendor fallback behavior**: `interface.get_intraday_bars` does not use the generic `route_to_vendor` fallback chain — confirm this is intentional and error handling is adequate
+- **4h resampling correctness**: verify `_resample_1h_to_4h` OHLCV aggregation (open=first, high=max, low=min, close=last, volume=sum) and that `dropna(how="all")` does not silently discard partial candles
+
+## Fix notes
+
+**Round 1** (review-20260421_164340): Partial 4h boundary candles — added `counts >= _MIN_BARS_PER_4H_CANDLE` filter in `_resample_1h_to_4h`. `intraday_default_session` config key unwired — added `resolved_session = session or config.get(...)` in `interface.get_intraday_bars`. Added DST spring-forward test.
+
+**Round 2** (review-20260421_165039): `intraday_cache_dir` config key dead — added `resolved_cache_dir = cache_dir or config.get(...)` in interface. `intraday_refresh_cache` unused — added `resolved_refresh_cache = refresh_cache or config.get(...)` in interface.
+
+**Round 3** (review-20260421_165646): Stale live-date cache write — added `_is_live_end_date(end)` guard on both cache read and write paths. Added `test_live_end_date_fetch_is_not_persisted_to_cache` regression test.
+
+**Round 4** (review-20260421_170058): DST fall-back coverage — added `test_regular_session_around_dst_fallback` (2026-11-02). Verified `.vscode/settings.json` is single-object JSON. Verified `requirements.txt` still contains `.`.
+
+**Round 5** (review-20260421_171123): TOCTOU race — `_is_live_end_date(end)` was called twice without storing the result; captured once into `is_live` local variable used for both the read-guard and the write-guard.
+
+--- /Users/josephwong/TradingAgents/docs/handoffs/phase-2.md ---
+# Phase 2 Handoff — Deterministic Quant Engine
+
+Agent: Claude Code
+Date: 2026-04-21
+
+## What was built
+
+- `tradingagents/quant/regime.py`: Regime classifier. Key public function:
+    - `classify(bars: pd.DataFrame, config: dict | None) -> RegimeContract`
+    - Computes ADX (Wilder smoothing) + ATR from 4h bars.
+    - Labels regime as `trending` (ADX ≥ 25), `ranging` (ADX ≤ 20), or `consolidation` (low ADX + tight Bollinger width).
+    - Tradability gate: ATR% ≥ `min_atr_pct` AND average volume ≥ `min_volume`.
+    - HTF directional bias: `bullish` / `bearish` / `neutral` relative to SMA(20).
+    - Helper exports: `compute_atr()`, `compute_adx()` — reusable by Phase 3.
+
+- `tradingagents/quant/entry.py`: Dual entry engines. Key public functions:
+    - `run_breakout(bars, config) -> EntrySignal | NoSignal`: N-bar channel (default 20) breakout with volume confirmation (factor 1.5×).
+    - `run_mean_reversion(bars, config) -> EntrySignal | NoSignal`: Wilder RSI(14) extreme + price stretched from SMA by `mr_stretch_std` std devs (default 2.0) or `mr_min_stretch_pct` (default 1%), whichever is larger. Both conditions must hold simultaneously.
+    - `run_entry(bars, regime, config) -> EntrySignal | NoSignal`: Regime-aware dispatcher. TRENDING → breakout; RANGING → mean reversion; CONSOLIDATION → NoSignal. Applies HTF directional filter.
+    - `_direction_allowed(signal, htf_bias) -> bool`: exported helper for engine.py forced-mode paths.
+
+- `tradingagents/quant/validation.py`: Three independently-togglable validation filters:
+    - `validate(bars, entry_signal, config) -> ValidationResult`
+    - **momentum_acceleration** (`validation_momentum`): MACD histogram must be increasing for long, decreasing for short.
+    - **squeeze_gate** (`validation_squeeze`): rejects when Bollinger Bands are fully inside Keltner Channels (TTM Squeeze ON).
+    - **sr_proximity** (`validation_sr_proximity`): rejects if price within `sr_proximity_pct` (default 0.5%) of a recent swing high/low (N-bar local extrema scan).
+
+- `tradingagents/quant/engine.py`: Top-level orchestrator:
+    - `run_quant_engine(symbol, trade_date, bars_15m, bars_4h, config) -> QuantSignalContract`
+    - Pipeline: `regime(bars_4h)` → `entry(bars_15m, regime)` → `validate(bars_15m, entry)` → `QuantSignalContract`.
+    - Exceptions in any stage are caught and returned as an error `QuantSignalContract` (never propagated).
+    - `config["entry_mode"]`: `"auto"` (default, regime-based), `"breakout"`, or `"mean_reversion"` to force engine.
+    - Score: `entry.strength * (filters_passed / filters_total)`, signed by direction. HOLD → score=0.
+
+- `tradingagents/quant/contracts.py`: Added Phase 2 contract types:
+    - `RegimeLabel(str, Enum)`: `trending | ranging | consolidation`
+    - `EntryEngine(str, Enum)`: `breakout | mean_reversion`
+    - `RegimeContract(frozen dataclass)`: `label, tradable, adx, atr, atr_pct, htf_bias`
+    - `EntrySignal(frozen dataclass)`: `engine, direction, strength, reason`
+    - `NoSignal(frozen dataclass)`: `reason` — explicit typed sentinel (never `None`)
+    - `ValidationResult(frozen dataclass)`: `passed, filters_passed, filters_total, reasons: Tuple[str, ...]`
+    - All have `.to_dict()` methods.
+
+- `tradingagents/quant/__init__.py`: Exports all new contract types and `run_quant_engine`.
+
+- `tradingagents/default_config.py`: Added 30 new config keys for regime, entry, and validation parameters (all with documented defaults). Key toggles: `validation_momentum`, `validation_squeeze`, `validation_sr_proximity`. Entry dispatch: `entry_mode`.
+
+- `tests/test_quant_engine.py`: 49 new tests covering regime, breakout, mean reversion, directional filter, all three validation filters, engine orchestration, error isolation, and determinism.
+
+## Contracts exposed to next phase
+
+- `run_quant_engine(symbol, trade_date, bars_15m, bars_4h, config) -> QuantSignalContract`: lives in `tradingagents.quant.engine`. Phase 3 (risk + sizing) should call this to obtain a signal before applying position sizing and stop logic.
+- `RegimeContract` (`tradingagents.quant.contracts`): carries `atr`, `atr_pct`, and `htf_bias` — Phase 3 can use ATR for stop-distance calculation directly from the regime output.
+- `EntrySignal` (`tradingagents.quant.contracts`): carries `direction` and `strength` — Phase 3 uses direction to determine long/short and can use strength to weight sizing.
+- `compute_atr(bars, period) -> pd.Series` and `compute_adx(bars, period) -> pd.DataFrame` from `tradingagents.quant.regime` — reusable for Phase 3 ATR-based stop calculations.
+- `NoSignal` (`tradingagents.quant.contracts`): typed sentinel, never `None`. Phase 3 must check `isinstance(entry, NoSignal)` before sizing.
+
+## Config keys added
+
+All keys live in `DEFAULT_CONFIG` in `tradingagents/default_config.py`. No env overrides (programmatic-only).
+
+**Regime:**
+- `adx_period`: int, default 14
+- `atr_period`: int, default 14
+- `bb_period`: int, default 20
+- `adx_trending_threshold`: float, default 25.0
+- `adx_ranging_threshold`: float, default 20.0
+- `min_atr_pct`: float, default 0.001
+- `min_volume`: float, default 100_000
+- `htf_sma_period`: int, default 20
+- `htf_bias_neutral_pct`: float, default 0.005
+
+**Breakout entry:**
+- `breakout_lookback`: int, default 20
+- `breakout_volume_factor`: float, default 1.5
+
+**Mean reversion entry:**
+- `rsi_period`: int, default 14
+- `rsi_oversold`: float, default 30.0
+- `rsi_overbought`: float, default 70.0
+- `mr_sma_period`: int, default 20
+- `mr_stretch_std`: float, default 2.0
+- `mr_min_stretch_pct`: float, default 0.01
+
+**Validation filters:**
+- `validation_momentum`: bool, default True
+- `validation_squeeze`: bool, default True
+- `validation_sr_proximity`: bool, default True
+- `macd_fast`: int, default 12
+- `macd_slow`: int, default 26
+- `macd_signal_period`: int, default 9
+- `bb_std`: float, default 2.0
+- `kc_period`: int, default 20
+- `kc_atr_factor`: float, default 1.5
+- `kc_atr_period`: int, default 14
+- `sr_lookback`: int, default 50
+- `sr_swing_width`: int, default 5
+- `sr_proximity_pct`: float, default 0.005
+
+**Engine dispatch:**
+- `entry_mode`: str, default `"auto"` (values: `"auto"`, `"breakout"`, `"mean_reversion"`)
+
+## Test command
+
+```
+tradingagent_venv/bin/python -m unittest tests.test_intraday tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_execution_contracts tests.test_quant_engine -v
+```
+
+Expected: 98 tests, all OK.
+
+## Known limitations / deferred decisions
+
+- **4h bars for entry**: `run_quant_engine` takes separate `bars_15m` and `bars_4h`; the caller must fetch both and pass them. No intraday fetch is embedded in the engine (intentional: keeps engine pure/testable).
+- **MR stretch threshold**: Default `mr_stretch_std=2.0` requires a sharp price move relative to SMA volatility. For linearly trending data the maximum achievable deviation is ~1.73 std (geometric property of linear series). Callers doing live/backtesting may need `mr_stretch_std=1.5` for MR signals in gradual-trend regimes.
+- **SR proximity swing detection**: Uses simple local-extrema scan (`sr_swing_width` half-window). Overlapping SR levels are not clustered; dense SR zones may produce many redundant levels.
+- **No integration with Phase 1 intraday fetch**: `run_quant_engine` receives pre-fetched bars. The wiring of `get_intraday_bars` → `run_quant_engine` is left to the Phase 4 execution layer or a thin coordinator function.
+- **Volume column is optional**: If bars have no `Volume` column, the volume gate (breakout) and tradability filter pass automatically.
+- **ATR-based stop calculation**: Phase 3 should call `regime_mod.compute_atr(bars_15m, config["atr_period"])` directly on 15m bars for stop distances — the `RegimeContract.atr` field is computed on 4h bars and is too coarse for intraday stops.
+
+## What the reviewer must focus on
+
+- **Determinism**: Verify same `bars_15m` and `bars_4h` DataFrames always produce identical `QuantSignalContract` (no mutable state, no datetime.now calls in engine path).
+- **No hidden mutable state**: Confirm `regime.py`, `entry.py`, `validation.py` have no module-level mutable variables.
+- **Signal logic matches spec**: Verify regime→engine dispatch matches plan (TRENDING=breakout, RANGING=mean_reversion, CONSOLIDATION=NoSignal).
+- **Module boundaries**: Confirm `engine.py` does not import from `validation.py` internals (only public `validate()`), and `entry.py` does not import `validation.py`.
+- **`_direction_allowed` visibility**: This helper is used by `engine.py` for forced-mode paths; verify it behaves correctly for all three bias values.
+- **Error isolation**: Verify that an exception in `regime.classify` or `entry.run_entry` returns an error `QuantSignalContract` without propagating.
+
+
+## Fix notes
+
+--- /Users/josephwong/TradingAgents/docs/handoffs/phase-3.md ---
+# Phase 3 Handoff — Hard Risk and Sizing
+
+Agent: Claude Code
+Date: 2026-04-21
+
+## What was built
+
+- `tradingagents/quant/risk.py`: Pure deterministic risk and sizing module. Four public functions:
+    - `size_position(entry_signal, entry_price, atr_15m, account_equity, config) -> PositionSizeContract`
+      Fixed-fractional sizing: `quantity = min(equity*risk_pct/stop_dist, equity*max_pos_pct/price)`. Raises `ValueError` for non-positive inputs.
+    - `compute_stops(direction, entry_price, atr_15m, config) -> StopContract`
+      ATR-based: initial stop (`±atr_stop_mult*atr`), break-even trigger (`±be_mult*atr`), trailing distance (`trail_mult*atr`). Raises `ValueError` for non-positive inputs.
+    - `check_risk_gates(size_contract, daily_loss_state, current_exposure, account_equity, config) -> RiskGateResult`
+      Three priority-ordered gates: kill switch → daily loss cap → exposure cap.
+    - `update_daily_loss(state, trade_pnl, account_equity, config) -> DailyLossState`
+      Accumulates daily P&L; latches `kill_switch=True` when `net_pnl <= -(equity*ks_pct)`.
+    - No LLM calls, no I/O, no mutable module-level state.
+
+- `tradingagents/quant/contracts.py`: Added four Phase 3 frozen dataclasses:
+    - `PositionSizeContract`: `symbol, direction, quantity, entry_price, notional, stop_price, risk_amount, method` — `.to_dict()`
+    - `StopContract`: `initial_stop, breakeven_trigger, trailing_distance` — `.to_dict()`
+    - `RiskGateResult`: `allowed, reason, kill_switch` — `.to_dict()`
+    - `DailyLossState`: `date, net_pnl, kill_switch, trade_count` — `.to_dict()`, `.new_day(date)` constructor
+
+- `tradingagents/quant/__init__.py`: Exports all Phase 3 symbols alongside Phase 0-2 symbols.
+
+- `tradingagents/default_config.py`: Added 8 new risk/sizing config keys (see Config keys section).
+
+- `tests/test_risk.py`: 40 unit tests covering: basic sizing (long/short), cap binding, custom config, ValueError paths, stop calculations (both directions), all three risk gates, kill-switch latch, daily loss accumulation, immutability of state, and determinism.
+
+## Contracts exposed to next phase
+
+- `size_position(entry_signal, entry_price, atr_15m, account_equity, config) -> PositionSizeContract`:
+  lives in `tradingagents.quant.risk`. Phase 4 broker adapter calls this to compute share quantity before placing an order.
+- `compute_stops(direction, entry_price, atr_15m, config) -> StopContract`:
+  lives in `tradingagents.quant.risk`. Phase 4 order manager uses `initial_stop` for OCO/bracket orders; `breakeven_trigger` and `trailing_distance` for post-entry management.
+- `check_risk_gates(size_contract, daily_loss_state, current_exposure, account_equity, config) -> RiskGateResult`:
+  lives in `tradingagents.quant.risk`. Phase 4 must call this before every order submission; if `allowed=False`, the order must be dropped with the `reason` logged.
+- `update_daily_loss(state, trade_pnl, account_equity, config) -> DailyLossState`:
+  lives in `tradingagents.quant.risk`. Phase 4 portfolio state reconciliation calls this on every fill to maintain the daily loss accumulator.
+- `DailyLossState` (`tradingagents.quant.contracts`): immutable value object. Phase 4 stores one per trading day; reconstruct via `.new_day(date)` at session start.
+- `PositionSizeContract`, `StopContract`, `RiskGateResult` (`tradingagents.quant.contracts`): all frozen; fully serialisable via `.to_dict()`.
+
+## Config keys added
+
+All keys live in `DEFAULT_CONFIG` in `tradingagents/default_config.py`. No env overrides (programmatic-only).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `risk_per_trade_pct` | float | 0.01 | Fraction of equity risked per trade |
+| `atr_stop_mult` | float | 2.0 | ATR multiples for initial stop distance |
+| `breakeven_atr_mult` | float | 1.0 | ATR multiples of profit to trigger break-even |
+| `trailing_atr_mult` | float | 1.5 | ATR multiples for trailing stop distance |
+| `max_position_size_pct` | float | 0.10 | Max single-position notional as fraction of equity |
+| `max_exposure_pct` | float | 0.20 | Max aggregate notional exposure as fraction of equity |
+| `max_daily_loss_pct` | float | 0.02 | Daily loss cap (block new orders when breached) |
+| `kill_switch_daily_loss_pct` | float | 0.03 | Permanent halt threshold (latches for remainder of day) |
+
+## Test command
+
+```
+tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation tests.test_risk -v
+```
+Expected: 55 tests, all OK.
+
+## Known limitations / deferred decisions
+
+- **Symbol field on PositionSizeContract**: set to `entry_signal.engine.value` (e.g. `"breakout"`) rather than the ticker symbol. Phase 4 callers must override or the order manager must enrich with the actual symbol before submission.
+- **No bars_15m passed to size_position**: ATR for sizing is passed as a float (`atr_15m`). The caller must compute it from Phase 2's `regime.compute_atr(bars_15m, config["atr_period"])` before calling `size_position`. This keeps the risk module pure and avoids a pandas dependency.
+- **No partial-fill or slippage adjustment**: `PositionSizeContract.quantity` is a raw float. Phase 4 broker adapter is responsible for rounding to lot size and adjusting for slippage.
+- **Kelly sizing stub**: `method="fixed_fractional"` only. Capped Kelly requires win-rate and payoff-ratio inputs that are not available until Phase 6 backtesting. The `method` field is the extension point.
+- **`check_risk_gates` exposure gate uses notional**: `current_exposure` is total open notional in base currency. Phase 4 must maintain a running sum of open position notionals and pass it on every gate check.
+- **Kill switch resets across days**: `DailyLossState.new_day()` starts fresh. Session management (ensuring one state per calendar day) is deferred to Phase 4 portfolio state.
+- **No per-instrument exposure cap**: only a total aggregate cap is enforced. Per-ticker concentration limits are deferred.
+
+## What the reviewer must focus on
+
+- **Sizing formula correctness**: verify `min(raw_qty, cap_qty)` correctly binds to the tighter constraint in all cases, including when `raw_qty < cap_qty` (risk limit binds before position cap).
+- **Kill switch reachability**: verify that a single call to `check_risk_gates` with `kill_switch=True` in the state always returns `allowed=False`, regardless of other gate values.
+- **No float precision traps in stop calculations**: verify that stop prices are rounded consistently (8 decimal places) and that the rounding does not push `initial_stop` to or above `entry_price` for a long trade with very small ATR.
+- **Exposure cap boundary**: confirm that `current_exposure + notional == max_exposure` is allowed (not `>`), matching the test `test_exposure_exactly_at_cap_is_allowed`.
+- **Kill switch latch**: verify that once `kill_switch=True` in `DailyLossState`, subsequent calls to `update_daily_loss` with profitable trades never clear it.
+- **Integration with Phase 0 contracts**: verify `PositionSizeContract` and `RiskGateResult` are typed, frozen, and serialisable — and that Phase 0's `OrderIntentContract` can be enriched with sizing info in Phase 4 without structural changes to existing contracts.
+
+## Fix notes
+
+(none yet)
+
+--- /Users/josephwong/TradingAgents/docs/handoffs/phase-4.md ---
+# Phase 4 Handoff - Execution and Portfolio State
+
+Agent: Codex
+Date: 2026-04-22
+
+## What was built
+
+- `tradingagents/quant/execution.py`: deterministic paper execution module.
+    - `BrokerAdapter`: runtime-checkable protocol for broker implementations.
+    - `PaperBrokerAdapter(slippage_pct=0.0, commission_per_order=0.0)`: in-memory paper broker; supports idempotent submit/cancel/fill behavior.
+    - `OrderManager(broker, config=None)`: converts risk-gated `OrderIntentContract` dicts into broker orders and enforces pre-trade guards.
+    - `PortfolioState(cash, positions={}, fills=())`: immutable portfolio state reconciler; `apply_fill(fill)` updates cash/positions and ignores duplicate fills.
+    - `ExecutionOrder`, `FillContract`, `PortfolioPosition`, `OrderStatus`: serializable execution value objects.
+- `tradingagents/quant/__init__.py`: exported Phase 4 broker, order, fill, and portfolio symbols.
+- `tradingagents/default_config.py`: added execution guard thresholds:
+    - `max_order_volume_pct`
+    - `max_slippage_pct`
+- `tradingagents/graph/trading_graph.py`: `build_order_intent(..., risk_context=...)` enriches strict-mode order intents with Phase 3 sizing and risk-gate annotations before they reach `OrderManager`.
+- `tests/test_execution.py`: added Phase 4 coverage for broker adapter contract, guard defaults, paper fill pricing, submit/cancel/fill idempotency, guard ordering, and portfolio reconciliation.
+- `tests/test_execution_contracts.py`: strict-mode order-intent coverage for kill-switch and exposure-cap blocking through `risk_context`.
+
+## Contracts exposed to next phase
+
+- `OrderManager.submit_order_intent(order_intent, market_snapshot, submitted_at="", idempotency_key=None) -> ExecutionOrder`
+    - Consumes a strict-mode order intent with `annotations["risk"]["size_contract"]` and `annotations["risk"]["gate"]`.
+    - Guard order: blocked intent -> risk gate -> liquidity -> slippage -> broker submit.
+- `OrderManager.process_next_bar(order_id, next_bar, timestamp="") -> FillContract`
+    - Delegates to the broker and returns the fill for the next bar.
+- `PaperBrokerAdapter.submit_order(...) -> ExecutionOrder`
+    - Idempotent when `idempotency_key` is supplied.
+- `PaperBrokerAdapter.cancel_order(order_id, reason="cancelled") -> ExecutionOrder`
+    - Idempotent for already cancelled, filled, or rejected orders.
+- `PaperBrokerAdapter.process_next_bar(order_id, next_bar, timestamp="") -> FillContract`
+    - Fills submitted market orders at next-bar open plus configured slippage.
+    - Idempotent: repeated calls for the same order return the original fill and do not duplicate state.
+- `PortfolioState.apply_fill(fill) -> PortfolioState`
+    - Immutable reconciliation from fills; duplicate `fill_id` is ignored.
+
+## Config keys added
+
+- `max_order_volume_pct`: `float`, default `0.01`, no env override. Rejects orders whose quantity exceeds this fraction of latest bar volume.
+- `max_slippage_pct`: `float`, default `0.005`, no env override. Rejects orders whose expected slippage exceeds this threshold.
+
+## Test command
+
+```
+/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v
+```
+
+Additional relevant Phase 4 coverage:
+
+```
+/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution tests.test_execution_contracts tests.test_risk -v
+```
+
+## Known limitations / deferred decisions
+
+- `PaperBrokerAdapter` is in-memory only; no persistence or external broker API is wired.
+- Orders are market-style paper orders only. Limit, stop, bracket/OCO, partial fills, and trailing stop management are deferred.
+- Liquidity guard uses latest bar volume and order quantity; it does not model ADV, bid/ask depth, lot sizes, or borrow availability.
+- `PortfolioState` tracks cash, signed quantity, average price, and fills; realized P&L attribution and daily-loss updates from closed trades are deferred.
+- `propagate(...)` does not yet submit to `OrderManager`; the execution layer is explicit so paper/live callers can decide when to submit.
+
+## What the reviewer must focus on
+
+- Verify order state transitions are idempotent for submit, cancel, and fill operations.
+- Verify paper fills use next-bar open plus configured slippage and never duplicate fills on replay.
+- Verify guard ordering is strict and conservative: blocked intent, risk gate, liquidity, then slippage.
+- Verify `PortfolioState.apply_fill()` is deterministic and duplicate-fill safe.
+- Verify no LLM output reaches `OrderManager`; it consumes only typed order intent and risk annotations.
+
+## Fix notes
+
+- 2026-04-22T00:28:01+0800: Addressed `reviews/phase-4-review.md`.
+    - HIGH: `PaperBrokerAdapter.reject_order()` no longer returns an existing submitted order for a reused idempotency key. Blocked/risk-rejected intents now produce terminal rejected orders even if the same key was used for an earlier successful submit.
+    - MEDIUM: `OrderManager.submit_order_intent()` now rejects `quantity <= 0` at the liquidity guard layer with `liquidity guard: non-positive quantity`, before broker submission.
+    - LOW: `OrderManager.__init__()` now seeds config from `DEFAULT_CONFIG` and overlays caller-provided config.
+    - Added regression tests for same-key blocked intent rejection, zero-quantity guard rejection, and default config binding.
+    - Validation:
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution -v` -> 9 tests OK
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution tests.test_execution_contracts tests.test_risk -v` -> 60 tests OK
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v` -> 15 tests OK
+- 2026-04-22T00:35:33+0800: Addressed second `reviews/phase-4-review.md` pass.
+    - HIGH: `PaperBrokerAdapter.reject_order()` now always uses the sequential order-id path. Rejected orders keep the provided `idempotency_key` for audit but never share an order id with a previously submitted order.
+    - Added regression assertions that a blocked intent reusing a previous idempotency key returns a distinct rejected order and leaves the original submitted order stored as `SUBMITTED`.
+    - Validation:
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution.PaperExecutionTests.test_blocked_intent_with_previous_idempotency_key_still_rejects -v` -> 1 test OK
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_execution tests.test_execution_contracts tests.test_risk -v` -> 60 tests OK
+        - `/Users/josephwong/TradingAgents/tradingagent_venv/bin/python -m unittest tests.test_quant_tool tests.test_quant_prefilter tests.test_model_validation -v` -> 15 tests OK
+
+
+Current phase plan excerpt:

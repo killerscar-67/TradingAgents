@@ -66,7 +66,7 @@ class AgentState(MessagesState):
     ]
     fundamentals_report: Annotated[str, "Report from the Fundamentals Researcher"]
 
-    # Compact context: distilled briefs keyed by market/sentiment/news/fundamentals.
+    # compact context (Phase 8): distilled briefs keyed by market/sentiment/news/fundamentals.
     # Built lazily by the first downstream agent that runs; reused by all subsequent agents.
     # Empty dict when context_mode="full" or before any downstream agent has run.
     analysis_brief: Annotated[

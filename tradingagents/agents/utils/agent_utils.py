@@ -8,6 +8,9 @@ from tradingagents.agents.utils.core_stock_tools import (
 from tradingagents.agents.utils.technical_indicators_tools import (
     get_indicators
 )
+from tradingagents.agents.utils.quant_tools import (
+    get_quant_signals
+)
 from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
     get_balance_sheet,
@@ -107,7 +110,6 @@ def cap_debate_history(
         return head + "\n…[history truncated]…\n" + tail
     return "…[history truncated]…\n" + tail
 
-
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add placeholder for Anthropic compatibility"""
@@ -122,6 +124,9 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
+
+
+        
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +202,3 @@ def create_parallel_analysts_node(analyst_nodes: dict):
         return merged
 
     return parallel_node
-
-
-        

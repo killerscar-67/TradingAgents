@@ -24,6 +24,7 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_indicators,
+    get_quant_signals,
     get_fundamentals,
     get_balance_sheet,
     get_cashflow,
@@ -45,6 +46,21 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+from .prefilter import score_tickers_with_quant
+from tradingagents.quant.contracts import (
+    DailyLossState,
+    EntryEngine,
+    EntrySignal,
+    ExecutionMode,
+    OrderIntentContract,
+    PositionSizeContract,
+    QuantSignalContract,
+    QuantSignalLabel,
+    TradeRating,
+    parse_execution_mode,
+    rating_from_quant_signal,
+)
+from tradingagents.quant.risk import check_risk_gates, size_position
 
 
 class TradingAgentsGraph:
@@ -68,6 +84,7 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.execution_mode: ExecutionMode = parse_execution_mode(self.config.get("execution_mode"))
 
         # Update the interface's config
         set_config(self.config)
@@ -157,7 +174,10 @@ class TradingAgentsGraph:
 
     def _get_provider_kwargs(self) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation."""
-        kwargs = {}
+        kwargs = {
+            "timeout": self.config.get("llm_timeout", 300),
+            "retry_attempts": self.config.get("llm_retry_attempts", 3),
+        }
         provider = self.config.get("llm_provider", "").lower()
 
         if provider == "google":
@@ -186,6 +206,7 @@ class TradingAgentsGraph:
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
+                    get_quant_signals,
                 ]
             ),
             "intraday_market": ToolNode(
@@ -256,13 +277,28 @@ class TradingAgentsGraph:
 
         return result
 
-    def propagate(self, company_name, trade_date):
+    def propagate(
+        self,
+        company_name,
+        trade_date,
+        quant_contract: Optional["QuantSignalContract"] = None,
+    ):
         """Run the trading agents graph for a company on a specific date.
 
-        In daytrade mode, `trade_date` may be a YYYY-MM-DD string OR a full
-        ISO 8601 datetime (e.g. "2025-04-24T10:30:00-04:00"); session context
-        is resolved automatically and bars walk back to the previous session
-        when called outside RTH.
+        Args:
+            company_name: Ticker symbol or company identifier.
+            trade_date: Date string (YYYY-MM-DD) or date object. In daytrade mode,
+                may also be a full ISO 8601 datetime (e.g. "2025-04-24T10:30:00-04:00");
+                session context is resolved automatically and bars walk back to the
+                previous session when called outside extended hours.
+            quant_contract: Optional pre-scored QuantSignalContract. When provided
+                in quant_strict mode, the live quant fetch is skipped so the
+                returned order intent is derived from the same signal used during
+                prefiltering, preserving determinism.
+
+        Returns:
+            (final_state, order_intent) where order_intent is the full dict from
+            OrderIntentContract.to_dict(), including 'rating' and 'blocked'.
         """
 
         self.ticker = company_name
@@ -294,7 +330,7 @@ class TradingAgentsGraph:
         # Log state
         self._log_state(trade_date, final_state)
 
-        # Journal the structured intraday decision(s) — best-effort.
+        # Journal the structured intraday decision(s) — best-effort, swing runs unaffected.
         if self.journal is not None and self.trading_style == "daytrade":
             decisions = final_state.get("intraday_decisions") or []
             if decisions:
@@ -307,8 +343,16 @@ class TradingAgentsGraph:
                     also_log_agent_action=True,
                 )
 
-        # Return decision and processed signal
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        # Build the quant order intent (from feature/quant). When quant_contract is
+        # supplied, the live quant fetch is skipped for deterministic prefilter-driven runs.
+        order_intent = self.build_order_intent(
+            company_name,
+            str(trade_date),
+            final_state["final_trade_decision"],
+            quant_contract=quant_contract,
+        )
+
+        return final_state, order_intent
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
@@ -370,4 +414,263 @@ class TradingAgentsGraph:
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
-        return self.signal_processor.process_signal(full_signal)
+        return self.signal_processor.process_signal(full_signal, execution_mode=self.execution_mode)
+
+    def build_order_intent(
+        self,
+        symbol: str,
+        trade_date: str,
+        final_trade_decision_text: str,
+        quant_contract: Optional[QuantSignalContract] = None,
+        risk_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a typed order intent contract for execution and downstream automation.
+
+        Args:
+            symbol: Ticker symbol.
+            trade_date: Date string (YYYY-MM-DD).
+            final_trade_decision_text: Raw LLM final trade decision text.
+            quant_contract: Optional pre-scored QuantSignalContract.  When provided
+                in quant_strict mode the live quant fetch is skipped, ensuring the
+                order intent is derived from the same signal used during prefiltering.
+            risk_context: Optional runtime sizing and exposure inputs. When supplied
+                in quant_strict mode, position sizing and pre-trade risk gates are
+                applied before returning the order intent.
+        """
+        if self.execution_mode == "quant_strict":
+            if quant_contract is None:
+                raw_quant = get_quant_signals.func(symbol, trade_date)
+                quant_contract = QuantSignalContract.from_raw(symbol, trade_date, raw_quant)
+            rating = rating_from_quant_signal(quant_contract.signal)
+            intent = OrderIntentContract(
+                symbol=symbol,
+                trade_date=trade_date,
+                rating=rating,
+                source="quant_strict",
+                execution_mode="quant_strict",
+                blocked=quant_contract.error is not None or quant_contract.signal == QuantSignalLabel.UNKNOWN,
+                reason=quant_contract.error or ("Unknown quant signal." if quant_contract.signal == QuantSignalLabel.UNKNOWN else "Strict quant mode decision."),
+                annotations={
+                    "llm_final_trade_decision": final_trade_decision_text,
+                    "quant_signal": quant_contract.to_dict(),
+                },
+            )
+            intent = self._apply_quant_risk_controls(
+                symbol,
+                trade_date,
+                intent,
+                quant_contract,
+                risk_context=risk_context,
+            )
+            return intent.to_dict()
+
+        try:
+            extracted = self.process_signal(final_trade_decision_text)
+            rating = TradeRating(extracted)
+            extraction_failed = False
+        except ValueError:
+            rating = TradeRating.HOLD
+            extraction_failed = True
+        intent = OrderIntentContract(
+            symbol=symbol,
+            trade_date=trade_date,
+            rating=rating,
+            source="llm_assisted",
+            execution_mode="llm_assisted",
+            blocked=extraction_failed,
+            reason="LLM extraction fallback to HOLD." if extraction_failed else "LLM-assisted decision extraction.",
+            annotations={
+                "llm_final_trade_decision": final_trade_decision_text,
+            },
+        )
+        return intent.to_dict()
+
+    def _coerce_entry_signal(self, payload: Any) -> Optional[EntrySignal]:
+        if isinstance(payload, EntrySignal):
+            return payload
+        if not isinstance(payload, dict):
+            return None
+
+        engine_value = str(payload.get("engine", "")).strip().lower()
+        direction = str(payload.get("direction", "")).strip().lower()
+        if engine_value not in {item.value for item in EntryEngine}:
+            return None
+        if direction not in {"long", "short"}:
+            return None
+        try:
+            strength = float(payload.get("strength", 0.0))
+        except (TypeError, ValueError):
+            strength = 0.0
+
+        return EntrySignal(
+            engine=EntryEngine(engine_value),
+            direction=direction,
+            strength=strength,
+            reason=str(payload.get("reason", "")),
+        )
+
+    def _coerce_daily_loss_state(self, payload: Any, trade_date: str) -> DailyLossState:
+        if isinstance(payload, DailyLossState):
+            return payload
+        if isinstance(payload, dict):
+            return DailyLossState(
+                date=str(payload.get("date", trade_date)),
+                net_pnl=float(payload.get("net_pnl", 0.0)),
+                kill_switch=bool(payload.get("kill_switch", False)),
+                trade_count=int(payload.get("trade_count", 0)),
+            )
+        return DailyLossState.new_day(trade_date)
+
+    def _apply_quant_risk_controls(
+        self,
+        symbol: str,
+        trade_date: str,
+        intent: OrderIntentContract,
+        quant_contract: QuantSignalContract,
+        risk_context: Optional[Dict[str, Any]] = None,
+    ) -> OrderIntentContract:
+        context = risk_context or self.config.get("risk_context") or {}
+        if not context or intent.blocked:
+            return intent
+
+        entry_signal = self._coerce_entry_signal(
+            context.get("entry_signal")
+            or (quant_contract.raw.get("entry") if isinstance(quant_contract.raw, dict) else None)
+        )
+
+        metadata = quant_contract.raw.get("metadata", {}) if isinstance(quant_contract.raw, dict) else {}
+        entry_price = context.get("entry_price", metadata.get("close"))
+        atr_15m = context.get("atr_15m")
+        account_equity = context.get("account_equity")
+
+        if entry_signal is None or entry_price is None or atr_15m is None or account_equity is None:
+            return intent
+
+        daily_loss_state = self._coerce_daily_loss_state(context.get("daily_loss_state"), trade_date)
+        try:
+            current_exposure = float(context.get("current_exposure", 0.0))
+            size_contract = size_position(
+                entry_signal,
+                float(entry_price),
+                float(atr_15m),
+                float(account_equity),
+                self.config,
+            )
+            size_contract = PositionSizeContract(
+                symbol=symbol,
+                direction=size_contract.direction,
+                quantity=size_contract.quantity,
+                entry_price=size_contract.entry_price,
+                notional=size_contract.notional,
+                stop_price=size_contract.stop_price,
+                risk_amount=size_contract.risk_amount,
+                method=size_contract.method,
+            )
+            risk_gate = check_risk_gates(
+                size_contract,
+                daily_loss_state,
+                current_exposure,
+                float(account_equity),
+                self.config,
+            )
+        except (TypeError, ValueError) as exc:
+            risk_annotations = dict(intent.annotations)
+            risk_annotations["risk"] = {
+                "applied": False,
+                "error": str(exc),
+            }
+            return OrderIntentContract(
+                symbol=intent.symbol,
+                trade_date=intent.trade_date,
+                rating=intent.rating,
+                source=intent.source,
+                execution_mode=intent.execution_mode,
+                blocked=True,
+                reason=f"Risk sizing failed: {exc}",
+                annotations=risk_annotations,
+            )
+
+        risk_annotations = dict(intent.annotations)
+        risk_annotations["risk"] = {
+            "applied": True,
+            "size_contract": size_contract.to_dict(),
+            "gate": risk_gate.to_dict(),
+        }
+        return OrderIntentContract(
+            symbol=intent.symbol,
+            trade_date=intent.trade_date,
+            rating=intent.rating,
+            source=intent.source,
+            execution_mode=intent.execution_mode,
+            blocked=intent.blocked or not risk_gate.allowed,
+            reason=risk_gate.reason if not risk_gate.allowed else intent.reason,
+            annotations=risk_annotations,
+        )
+
+    def rank_tickers_with_quant(
+        self,
+        tickers: List[str],
+        trade_date: str,
+        top_n: int = 10,
+        quant_kwargs: Optional[Dict[str, Any]] = None,
+        cache_dir: Optional[str] = None,
+        cache_ttl_days: Optional[int] = None,
+        refresh_cache: Optional[bool] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Rank a ticker universe with quant signals and choose top-N candidates."""
+        cache_root = cache_dir or os.path.join(self.config["data_cache_dir"], "quant_prefilter")
+        if cache_ttl_days is None:
+            cache_ttl_days = self.config.get("quant_prefilter_cache_ttl_days", 1)
+        if refresh_cache is None:
+            refresh_cache = bool(self.config.get("quant_prefilter_refresh_cache", False))
+        return score_tickers_with_quant(
+            tickers=tickers,
+            trade_date=trade_date,
+            top_n=top_n,
+            quant_kwargs=quant_kwargs,
+            cache_dir=cache_root,
+            cache_ttl_days=cache_ttl_days,
+            refresh_cache=refresh_cache,
+        )
+
+    def propagate_prefiltered_universe(
+        self,
+        tickers: List[str],
+        trade_date: str,
+        top_n: int = 10,
+        quant_kwargs: Optional[Dict[str, Any]] = None,
+        cache_dir: Optional[str] = None,
+        cache_ttl_days: Optional[int] = None,
+        refresh_cache: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Run quant-first filtering, then analyze only selected symbols via the LLM graph."""
+        prefilter = self.rank_tickers_with_quant(
+            tickers=tickers,
+            trade_date=trade_date,
+            top_n=top_n,
+            quant_kwargs=quant_kwargs,
+            cache_dir=cache_dir,
+            cache_ttl_days=cache_ttl_days,
+            refresh_cache=refresh_cache,
+        )
+
+        analysis = {}
+        for item in prefilter["selected"]:
+            symbol = item["symbol"]
+            # Reconstruct the pre-scored contract so build_order_intent in
+            # quant_strict mode reuses it instead of making a second live fetch.
+            cached_contract = QuantSignalContract.from_dict(item["contract"])
+            final_state, order_intent = self.propagate(
+                symbol, trade_date, quant_contract=cached_contract
+            )
+            analysis[symbol] = {
+                "quant": item,
+                "order_intent": order_intent,
+                "blocked": order_intent.get("blocked", False),
+                "final_state": final_state,
+            }
+
+        return {
+            "prefilter": prefilter,
+            "analysis": analysis,
+        }

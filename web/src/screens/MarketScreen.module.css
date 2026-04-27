@@ -1,0 +1,428 @@
+.page {
+  padding: 32px;
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.liveIndicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fbbf24;
+}
+
+.liveDotActive {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.liveLabel {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sectionHeader {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.chartControlStack {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.chartModeGroup {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.sessionHint {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chartModeBtn {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 999px;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+
+.chartModeBtnActive {
+  background: #1d4ed8;
+  border-color: #2563eb;
+  color: #eff6ff;
+}
+
+.regimeCard {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 16px 20px;
+}
+
+.regimeLabel {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-bottom: 8px;
+}
+
+.regimeMeta {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.regimeDate {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.continueBtn {
+  align-self: flex-start;
+  padding: 8px 18px;
+  background: #1d4ed8;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.continueBtn:hover {
+  background: #2563eb;
+}
+
+.indexGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.indexTile {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.indexSymbol {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f8fafc;
+  margin-bottom: 2px;
+}
+
+.indexName {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.indexPrice {
+  font-size: 16px;
+  font-weight: 500;
+  color: #e2e8f0;
+  margin-bottom: 2px;
+}
+
+.indexChange {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.positive {
+  color: #4ade80;
+}
+
+.negative {
+  color: #f87171;
+}
+
+.breadthRow {
+  display: flex;
+  gap: 24px;
+}
+
+.breadthItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.breadthValue {
+  font-size: 22px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.breadthLabel {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.sectorGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+.sectorTile {
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+}
+
+.sectorTile span {
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sectorTile strong {
+  font-size: 13px;
+}
+
+.calendarHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.calendarToolbar {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.emptyPanel {
+  background: #161b27;
+  border: 1px dashed #334155;
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 12px;
+}
+
+.calendarMonthLabel {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.calendarMonthNav {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.calendarLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.legendItem {
+  border-radius: 999px;
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+}
+
+.legendMacroHigh {
+  background: rgba(234, 88, 12, 0.22);
+  border: 1px solid rgba(251, 146, 60, 0.32);
+}
+
+.legendMacroMedium {
+  background: rgba(37, 99, 235, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+}
+
+.legendFinance {
+  background: rgba(22, 163, 74, 0.16);
+  border: 1px solid rgba(74, 222, 128, 0.28);
+}
+
+.calendarGrid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.calendarWeekday {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 4px;
+  text-transform: uppercase;
+}
+
+.calendarCell {
+  background: #161b27;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  min-height: 92px;
+  padding: 8px;
+}
+
+.calendarCellMuted {
+  opacity: 0.32;
+}
+
+.calendarDayNumber {
+  color: #cbd5e1;
+  display: grid;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.calendarItems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calendarPill {
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+}
+
+.calendarPill strong {
+  color: #f8fafc;
+  font-size: 11px;
+}
+
+.calendarPill span {
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.calendarPillMacroHigh {
+  background: rgba(234, 88, 12, 0.22);
+  border: 1px solid rgba(251, 146, 60, 0.32);
+}
+
+.calendarPillMacroMedium {
+  background: rgba(37, 99, 235, 0.18);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+}
+
+.calendarPillFinance {
+  background: rgba(22, 163, 74, 0.16);
+  border: 1px solid rgba(74, 222, 128, 0.28);
+}
+
+@media (max-width: 960px) {
+  .calendarHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .calendarToolbar {
+    align-items: stretch;
+  }
+
+  .calendarMonthNav {
+    justify-content: space-between;
+  }
+
+  .calendarLegend {
+    justify-content: flex-start;
+  }
+
+  .calendarGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .calendarWeekday {
+    display: none;
+  }
+}
+
+.impactBadge {
+  background: #422006;
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.empty {
+  padding-top: 80px;
+  text-align: center;
+  font-size: 14px;
+  color: #475569;
+}
