@@ -163,7 +163,19 @@
   background: #161b27;
   border: 1px solid #1e293b;
   border-radius: 8px;
+  cursor: pointer;
+  display: block;
+  text-align: left;
   padding: 14px 16px;
+}
+
+.indexTile:hover {
+  border-color: #334155;
+}
+
+.indexTileActive {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.35);
 }
 
 .indexSymbol {
@@ -227,6 +239,36 @@
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 }
 
+.sectorCompositeCard {
+  align-items: center;
+  background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.9));
+  border: 1px solid #334155;
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.sectorCompositeLabel {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sectorCompositeMetrics {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+}
+
+.sectorCompositePrice {
+  color: #e2e8f0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
 .sectorTile {
   border: 1px solid #1e293b;
   border-radius: 8px;
@@ -245,6 +287,12 @@
 
 .sectorTile strong {
   font-size: 13px;
+}
+
+.sectorPrice {
+  color: #e2e8f0;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .calendarHeader {

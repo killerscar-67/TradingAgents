@@ -79,6 +79,7 @@ class MarketOverview:
     regime: Dict[str, Any]
     breadth: Dict[str, Any]
     sectors: List[Dict[str, Any]]
+    sector_composite: Dict[str, Any]
     events: List[Dict[str, Any]]
     regions: Dict[str, Dict[str, Any]]
     stream: Dict[str, Any]

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import yfinance as yf
@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.interface import get_intraday_bars
+from tradingagents.dataflows.session import is_extended_session, to_session_tz
 from tradingagents.quant.engine import run_quant_engine
 
 try:
@@ -21,6 +22,15 @@ def _contract_payload(contract) -> dict:
     # still display or cache the old payload shape.
     payload["curr_date"] = contract.trade_date
     return payload
+
+
+def _intraday_fetch_end(curr_date: str) -> tuple[str, datetime | None]:
+    trade_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    end = (trade_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    if to_session_tz(now).date() == trade_dt.date() and is_extended_session(now):
+        return end, now
+    return end, None
 
 
 def _try_intraday_quant_engine(
@@ -38,7 +48,7 @@ def _try_intraday_quant_engine(
     intraday_lookback = min(max(int(lookback_days), 1), 59)
     start_dt = end_dt - timedelta(days=intraday_lookback)
     start = start_dt.strftime("%Y-%m-%d")
-    end = curr_date
+    end, as_of = _intraday_fetch_end(curr_date)
     intraday_session = cfg.get("intraday_default_session")
     if not intraday_session:
         intraday_session = "extended" if cfg.get("include_extended_hours", True) else "regular"
@@ -49,6 +59,7 @@ def _try_intraday_quant_engine(
             "15m",
             start,
             end,
+            as_of=as_of,
             session=intraday_session,
             cache_dir=cfg.get("intraday_cache_dir"),
             refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),
@@ -58,6 +69,7 @@ def _try_intraday_quant_engine(
             "4h",
             start,
             end,
+            as_of=as_of,
             session=intraday_session,
             cache_dir=cfg.get("intraday_cache_dir"),
             refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),

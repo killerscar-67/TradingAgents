@@ -7,7 +7,19 @@ interface MarketLiveMessage {
   payload?: MarketOverview;
 }
 
-export function useMarketOverview() {
+interface CachedOverviewEntry {
+  fetchedAt: number;
+  payload: MarketOverview;
+}
+
+const OVERVIEW_CACHE_TTL_MS = 30_000;
+const overviewCache = new Map<string, CachedOverviewEntry>();
+
+export function __resetMarketOverviewCache(): void {
+  overviewCache.clear();
+}
+
+export function useMarketOverview(homeMarket = "US") {
   const [overview, setOverview] = useState<MarketOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,18 +30,36 @@ export function useMarketOverview() {
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    const cacheKey = homeMarket.toUpperCase();
+    const abortController = new AbortController();
 
     const fetchOverview = async () => {
+      const cached = overviewCache.get(cacheKey);
+      if (cached && (Date.now() - cached.fetchedAt) < OVERVIEW_CACHE_TTL_MS) {
+        if (!cancelled) {
+          setOverview(cached.payload);
+          setError(null);
+          setLoading(false);
+        }
+        return;
+      }
+
       try {
-        const resp = await fetch(apiUrl("/api/market/overview"));
+        const resp = await fetch(apiUrl(`/api/market/overview?home_market=${encodeURIComponent(cacheKey)}`), {
+          signal: abortController.signal,
+        });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data: MarketOverview = await resp.json();
+        overviewCache.set(cacheKey, { payload: data, fetchedAt: Date.now() });
         if (!cancelled) {
           setError(null);
           setOverview(data);
           setLoading(false);
         }
       } catch (e) {
+        if (abortController.signal.aborted) {
+          return;
+        }
         if (!cancelled) {
           setError(String(e));
           setLoading(false);
@@ -38,7 +68,7 @@ export function useMarketOverview() {
     };
 
     const connectWs = () => {
-      const ws = new WebSocket(apiWsUrl("/api/market/live"));
+      const ws = new WebSocket(apiWsUrl(`/api/market/live?home_market=${encodeURIComponent(cacheKey)}`));
       wsRef.current = ws;
 
       ws.onopen = () => { if (!cancelled) setLive(true); };
@@ -81,11 +111,12 @@ export function useMarketOverview() {
 
     return () => {
       cancelled = true;
+      abortController.abort();
       if (connectTimer) clearTimeout(connectTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, []);
+  }, [homeMarket]);
 
   return { overview, loading, error, live };
 }

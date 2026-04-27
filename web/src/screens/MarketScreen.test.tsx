@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { WorkflowProvider } from "../contexts/WorkflowContext";
 import { MarketScreen } from "./MarketScreen";
+import { __resetMarketOverviewCache } from "../hooks/useMarketOverview";
 import type { MarketOverview } from "../types";
 
 const contractReadyOverview: MarketOverview = {
@@ -15,7 +16,8 @@ const contractReadyOverview: MarketOverview = {
     event_risk_flag: false,
   },
   indices: [
-    { symbol: "SPY", label: "S&P 500", price: 500.0, change_pct: 0.5 },
+    { symbol: "^GSPC", label: "S&P 500", price: 500.0, change_pct: 0.5 },
+    { symbol: "^NDX", label: "NASDAQ 100", price: 18000.0, change_pct: 0.9 },
   ],
   breadth: {
     pct_above_50d: 64.5,
@@ -26,9 +28,14 @@ const contractReadyOverview: MarketOverview = {
     headline: "Broad participation",
   },
   sectors: [
-    { symbol: "XLK", label: "Technology", change_pct: 1.2 },
-    { symbol: "XLE", label: "Energy", change_pct: -0.8 },
+    { symbol: "XLK", label: "Technology", price: 215.4, change_pct: 1.2 },
+    { symbol: "XLE", label: "Energy", price: 92.8, change_pct: -0.8 },
   ],
+  sector_composite: {
+    label: "Equal-weight sector composite",
+    price: 154.1,
+    change_pct: 0.2,
+  },
   events: [
     { date: "2026-01-02", name: "CPI", impact: "H" },
     { date: "2026-01-03", name: "Minor data", impact: "L" },
@@ -53,7 +60,7 @@ const contractReadyOverview: MarketOverview = {
 function stubFetch(response = contractReadyOverview) {
   const mock = vi.fn(async (url: string) => {
     const path = new URL(url, "http://127.0.0.1").pathname + new URL(url, "http://127.0.0.1").search;
-    if (path === "/api/market/overview") {
+    if (path.startsWith("/api/market/overview")) {
       return { ok: true, json: async () => response };
     }
     if (path.startsWith("/api/market/chart")) {
@@ -110,7 +117,14 @@ function renderScreen() {
 }
 
 describe("MarketScreen", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    __resetMarketOverviewCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    __resetMarketOverviewCache();
+  });
 
   it("shows loading state initially", () => {
     stubPendingFetch();
@@ -138,7 +152,7 @@ describe("MarketScreen", () => {
   it("renders index tiles", async () => {
     stubFetch();
     renderScreen();
-    await waitFor(() => expect(screen.getByText("SPY")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("^GSPC")).toBeInTheDocument());
     expect(screen.getByText("+0.50%")).toBeInTheDocument();
   });
 
@@ -180,7 +194,7 @@ describe("MarketScreen", () => {
       close() {}
     });
     renderScreen();
-    await waitFor(() => expect(instances[0]?.url).toBe("ws://127.0.0.1:5173/api/market/live"));
+    await waitFor(() => expect(instances[0]?.url).toBe("ws://127.0.0.1:5173/api/market/live?home_market=US"));
   });
 
   it("does not construct a websocket when cleanup runs before deferred connect", () => {
@@ -211,14 +225,14 @@ describe("MarketScreen", () => {
   it("renders a merged monthly market calendar with colored event types", async () => {
     stubFetch();
     renderScreen();
-    await waitFor(() => expect(screen.getByText("Technology")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Technology (XLK)")).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "15m" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "4h" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "1D" })).toBeInTheDocument();
     expect(screen.getByText(/session timing appears on intraday charts/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Candles" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Line" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("Energy")).toBeInTheDocument();
+    expect(screen.getByText("Energy (XLE)")).toBeInTheDocument();
     expect(screen.getByText("CPI")).toBeInTheDocument();
     expect(screen.getByText("Market calendar")).toBeInTheDocument();
     expect(screen.getByText("Macro high")).toBeInTheDocument();
@@ -285,7 +299,7 @@ describe("MarketScreen", () => {
     const mockFetch = stubFetch();
     renderScreen();
 
-    await waitFor(() => expect(screen.getByText("Technology")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Technology (XLK)")).toBeInTheDocument());
     expect(
       mockFetch.mock.calls.some(([url]) => String(url).includes("/api/market/sectors"))
     ).toBe(false);
@@ -308,6 +322,9 @@ describe("MarketScreen", () => {
     const mockFetch = stubFetch({
       ...contractReadyOverview,
       home_market: "CA",
+      indices: [
+        { symbol: "XIU.TO", label: "TSX Composite", price: 33.2, change_pct: 0.2 },
+      ],
       regime: {
         ...contractReadyOverview.regime,
       },
@@ -400,7 +417,7 @@ describe("MarketScreen", () => {
 
     const mockFetch = vi.fn(async (url: string) => {
       const path = new URL(url, "http://127.0.0.1").pathname + new URL(url, "http://127.0.0.1").search;
-      if (path === "/api/market/overview") {
+      if (path.startsWith("/api/market/overview")) {
         throw new Error("network lost");
       }
       if (path.startsWith("/api/market/chart")) {
@@ -432,7 +449,7 @@ describe("MarketScreen", () => {
     });
 
     renderScreen();
-    await waitFor(() => expect(screen.getByText(/markets are closed\. showing last session\./i)).toBeInTheDocument());
+    await waitFor(() => expect(sockets.length).toBeGreaterThan(0));
 
     await act(async () => {
       sockets[0]?.onmessage?.(
@@ -446,7 +463,6 @@ describe("MarketScreen", () => {
     });
 
     await waitFor(() => expect(screen.getByText(/bull.*momentum/i)).toBeInTheDocument());
-    expect(screen.queryByText(/markets are closed\. showing last session\./i)).not.toBeInTheDocument();
   });
 
   it("lets the user toggle between candle and line charts", async () => {
@@ -487,15 +503,15 @@ describe("MarketScreen", () => {
           ([url]) =>
             String(url).includes("/api/market/chart?") &&
             String(url).includes("interval=4h") &&
-            String(url).includes("session=regular")
+            String(url).includes("session=extended")
         )
       ).toBe(true)
     );
 
-    expect(screen.getByRole("button", { name: "Regular" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Extended" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Regular" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Extended" })).toHaveAttribute("aria-pressed", "true");
 
-    await user.click(screen.getByRole("button", { name: "Extended" }));
+    await user.click(screen.getByRole("button", { name: "Regular" }));
 
     await waitFor(() =>
       expect(
@@ -503,9 +519,41 @@ describe("MarketScreen", () => {
           ([url]) =>
             String(url).includes("/api/market/chart?") &&
             String(url).includes("interval=4h") &&
-            String(url).includes("session=extended")
+            String(url).includes("session=regular")
         )
       ).toBe(true)
     );
+  });
+
+  it("loads selected index chart when index tile is clicked", async () => {
+    const user = userEvent.setup();
+    const mockFetch = stubFetch();
+    renderScreen();
+
+    await waitFor(() =>
+      expect(
+        mockFetch.mock.calls.some(
+          ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=%5EGSPC")
+        )
+      ).toBe(true)
+    );
+
+    await user.click(screen.getByRole("button", { name: "Load NASDAQ 100 chart" }));
+
+    await waitFor(() =>
+      expect(
+        mockFetch.mock.calls.some(
+          ([url]) => String(url).includes("/api/market/chart?") && String(url).includes("symbol=%5ENDX")
+        )
+      ).toBe(true)
+    );
+  });
+
+  it("renders sector prices", async () => {
+    stubFetch();
+    renderScreen();
+
+    await waitFor(() => expect(screen.getByText("Technology (XLK)")).toBeInTheDocument());
+    expect(screen.getByText("215.40")).toBeInTheDocument();
   });
 });

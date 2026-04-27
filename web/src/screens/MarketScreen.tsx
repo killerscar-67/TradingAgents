@@ -8,6 +8,7 @@ import styles from "./MarketScreen.module.css";
 interface SectorChange {
   symbol: string;
   label?: string;
+  price?: number;
   change_pct: number;
 }
 
@@ -151,11 +152,12 @@ function homeIndexForMarket(market: string): string {
 }
 
 export function MarketScreen() {
-  const { setRegime, autoAdvance, setScreen } = useWorkflow();
-  const { overview, loading, error, live } = useMarketOverview();
+  const { setRegime, autoAdvance, setScreen, homeMarket } = useWorkflow();
+  const { overview, loading, error, live } = useMarketOverview(homeMarket);
   const [chartInterval, setChartInterval] = useState<ChartInterval>("1D");
   const [chartSession, setChartSession] = useState<ChartSession>("regular");
   const [chartMode, setChartMode] = useState<"candlestick" | "line">("candlestick");
+  const [selectedIndexSymbol, setSelectedIndexSymbol] = useState<string>("");
   const [indexChart, setIndexChart] = useState<LinePoint[]>([]);
   const [indexBars, setIndexBars] = useState<OhlcBar[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
@@ -164,9 +166,11 @@ export function MarketScreen() {
   const mountedRef = useRef(true);
   const baseChartRequestRef = useRef(0);
   const backfillChartRequestRef = useRef(0);
+  const chartFetchControllerRef = useRef<AbortController | null>(null);
   const overviewHomeMarket = (overview as { home_market?: string } | null)?.home_market ?? overview?.regime?.home_market ?? "US";
   const tradeDate = (overview as { trade_date?: string } | null)?.trade_date;
-  const chartSymbol = homeIndexForMarket(overviewHomeMarket);
+  const defaultChartSymbol = overview?.indices?.[0]?.symbol ?? homeIndexForMarket(overviewHomeMarket);
+  const chartSymbol = selectedIndexSymbol || defaultChartSymbol;
   const hasOverview = Boolean(overview);
   const intradayChart = isIntradayInterval(chartInterval);
   const sessionTimingSupported = intradayChart && supportsEtSessionTiming(chartSymbol);
@@ -225,8 +229,19 @@ export function MarketScreen() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      chartFetchControllerRef.current?.abort();
+      chartFetchControllerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const availableSymbols = overview?.indices?.map((idx) => idx.symbol) ?? [];
+    if (!availableSymbols.length) {
+      setSelectedIndexSymbol("");
+      return;
+    }
+    setSelectedIndexSymbol((current) => (current && availableSymbols.includes(current) ? current : availableSymbols[0]));
+  }, [overview?.indices, overviewHomeMarket]);
 
   useEffect(() => {
     if (overview?.regime) {
@@ -238,10 +253,7 @@ export function MarketScreen() {
   }, [autoAdvance, overview?.regime, setRegime, setScreen]);
 
   useEffect(() => {
-    if (sessionTimingSupported) {
-      return;
-    }
-    setChartSession("regular");
+    setChartSession(sessionTimingSupported ? "extended" : "regular");
   }, [sessionTimingSupported]);
 
   const fetchChartChunk = useCallback(
@@ -257,6 +269,10 @@ export function MarketScreen() {
         interval: chartInterval,
         limit: String(CHART_LIMITS[chartInterval]),
       });
+
+      chartFetchControllerRef.current?.abort();
+      const controller = new AbortController();
+      chartFetchControllerRef.current = controller;
 
       if (sessionTimingSupported) {
         params.set("session", chartSession);
@@ -274,7 +290,7 @@ export function MarketScreen() {
       }
 
       try {
-        const response = await fetch(apiUrl(`/api/market/chart?${params.toString()}`));
+        const response = await fetch(apiUrl(`/api/market/chart?${params.toString()}`), { signal: controller.signal });
         const payload: ChartPayload = response.ok
           ? await response.json()
           : { bars: [], points: [], has_more: false };
@@ -299,6 +315,9 @@ export function MarketScreen() {
 
         setChartHasMore(Boolean(payload.has_more));
       } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
         if (
           !mountedRef.current ||
           (loadingOlder ? requestId !== backfillChartRequestRef.current : requestId !== baseChartRequestRef.current)
@@ -312,7 +331,10 @@ export function MarketScreen() {
           setChartHasMore(false);
         }
       } finally {
-        if (!mountedRef.current) {
+        if (
+          !mountedRef.current ||
+          (loadingOlder ? requestId !== backfillChartRequestRef.current : requestId !== baseChartRequestRef.current)
+        ) {
           return;
         }
 
@@ -397,14 +419,21 @@ export function MarketScreen() {
             <h2 className={styles.sectionTitle}>Indices</h2>
             <div className={styles.indexGrid}>
               {overview.indices.map((idx) => (
-                <div key={idx.symbol} className={styles.indexTile}>
+                <button
+                  key={idx.symbol}
+                  type="button"
+                  className={`${styles.indexTile} ${chartSymbol === idx.symbol ? styles.indexTileActive : ""}`}
+                  onClick={() => setSelectedIndexSymbol(idx.symbol)}
+                  aria-pressed={chartSymbol === idx.symbol}
+                  aria-label={`Load ${idx.label} chart`}
+                >
                   <div className={styles.indexSymbol}>{idx.symbol}</div>
                   <div className={styles.indexName}>{idx.label}</div>
                   <div className={styles.indexPrice}>{idx.price.toFixed(2)}</div>
                   <div className={`${styles.indexChange} ${idx.change_pct >= 0 ? styles.positive : styles.negative}`}>
                     {idx.change_pct >= 0 ? "+" : ""}{idx.change_pct.toFixed(2)}%
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </section>
@@ -471,7 +500,7 @@ export function MarketScreen() {
               loading={chartLoading && indexBars.length === 0 && indexChart.length === 0}
               session={chartSession}
               showSessionTiming={sessionTimingSupported}
-              height={220}
+              height={400}
             />
           </section>
 
@@ -485,7 +514,8 @@ export function MarketScreen() {
                   : `rgba(220, 38, 38, ${0.18 + intensity * 0.35})`;
                 return (
                   <div key={sector.symbol} className={styles.sectorTile} style={{ background }}>
-                    <span>{sector.label ?? sector.symbol}</span>
+                    <span>{sector.label ?? sector.symbol} ({sector.symbol})</span>
+                    <span className={styles.sectorPrice}>{(sector.price ?? 0).toFixed(2)}</span>
                     <strong className={sector.change_pct >= 0 ? styles.positive : styles.negative}>
                       {sector.change_pct >= 0 ? "+" : ""}{sector.change_pct.toFixed(2)}%
                     </strong>

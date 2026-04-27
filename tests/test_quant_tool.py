@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -56,9 +57,64 @@ class QuantToolTests(unittest.TestCase):
         self.assertEqual(contract.score, 0.8)
         self.assertEqual(contract.confidence, 1.0)
         self.assertEqual(mock_intraday.call_count, 2)
+        self.assertEqual(mock_intraday.call_args_list[0].args[3], "2026-03-31")
         self.assertEqual(mock_intraday.call_args_list[0].kwargs["session"], "extended")
         self.assertEqual(mock_intraday.call_args_list[1].kwargs["session"], "extended")
         mock_run_engine.assert_called_once()
+        mock_download.assert_not_called()
+
+    @patch("tradingagents.agents.utils.quant_tools.yf.download")
+    @patch("tradingagents.agents.utils.quant_tools.run_quant_engine")
+    @patch("tradingagents.agents.utils.quant_tools.get_intraday_bars")
+    def test_get_quant_signals_includes_live_premarket_bars_for_today(
+        self,
+        mock_intraday,
+        mock_run_engine,
+        mock_download,
+    ):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
+                return value if tz is None else value.astimezone(tz)
+
+        index_15m = pd.date_range("2026-04-27 08:00", periods=80, freq="15min", tz="UTC")
+        index_4h = pd.date_range("2026-04-01", periods=40, freq="4h", tz="UTC")
+        bars_15m = pd.DataFrame(
+            {
+                "Open": [100.0] * len(index_15m),
+                "High": [101.0] * len(index_15m),
+                "Low": [99.0] * len(index_15m),
+                "Close": [100.5] * len(index_15m),
+                "Volume": [200_000] * len(index_15m),
+            },
+            index=index_15m,
+        )
+        bars_4h = pd.DataFrame(
+            {
+                "Open": [100.0] * len(index_4h),
+                "High": [101.0] * len(index_4h),
+                "Low": [99.0] * len(index_4h),
+                "Close": [100.5] * len(index_4h),
+                "Volume": [200_000] * len(index_4h),
+            },
+            index=index_4h,
+        )
+        mock_intraday.side_effect = [bars_15m, bars_4h]
+        mock_run_engine.return_value = QuantSignalContract.from_raw(
+            "AAPL",
+            "2026-04-27",
+            {"signal": "buy", "score": 0.8, "confidence": 1.0, "summary": "premarket"},
+        )
+
+        with patch("tradingagents.agents.utils.quant_tools.datetime", FixedDateTime):
+            payload = json.loads(get_quant_signals.func("AAPL", "2026-04-27"))
+
+        self.assertEqual(payload["summary"], "premarket")
+        first_call = mock_intraday.call_args_list[0]
+        self.assertEqual(first_call.args[3], "2026-04-28")
+        self.assertEqual(first_call.kwargs["session"], "extended")
+        self.assertEqual(first_call.kwargs["as_of"], FixedDateTime.now(timezone.utc))
         mock_download.assert_not_called()
 
     @patch("tradingagents.agents.utils.quant_tools.yf.download")

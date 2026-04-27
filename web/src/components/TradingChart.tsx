@@ -83,6 +83,39 @@ const ET_TIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
   minute: "2-digit",
   hour12: false,
 });
+const ET_INTRADAY_LABEL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function unixFromChartTime(time: unknown): number | null {
+  if (typeof time === "number" && Number.isFinite(time)) {
+    return time;
+  }
+  if (time && typeof time === "object") {
+    const businessDay = time as { year?: number; month?: number; day?: number };
+    if (
+      typeof businessDay.year === "number" &&
+      typeof businessDay.month === "number" &&
+      typeof businessDay.day === "number"
+    ) {
+      return Math.floor(Date.UTC(businessDay.year, businessDay.month - 1, businessDay.day) / 1000);
+    }
+  }
+  return null;
+}
+
+function formatIntradayTick(time: unknown): string {
+  const unix = unixFromChartTime(time);
+  if (unix === null) {
+    return "";
+  }
+  return ET_INTRADAY_LABEL_FORMATTER.format(new Date(unix * 1000));
+}
 
 function getEtDayKey(timestamp: number): string {
   return ET_DAY_FORMATTER.format(new Date(timestamp * 1000));
@@ -398,6 +431,9 @@ export function TradingChart({
         },
         timeScale: {
           borderColor: "#334155",
+          ...(INTRADAY_INTERVALS.has(timeframeRef.current)
+            ? { tickMarkFormatter: formatIntradayTick }
+            : {}),
         },
         rightPriceScale: {
           borderColor: "#334155",
@@ -493,6 +529,19 @@ export function TradingChart({
     }
     updateSessionDecorations();
   }, [bars, hasData, lineData, session, showSessionTiming, timeframe, updateSessionDecorations]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) {
+      return;
+    }
+    const intraday = INTRADAY_INTERVALS.has(timeframe);
+    chart.applyOptions({
+      timeScale: {
+        tickMarkFormatter: intraday ? formatIntradayTick : undefined,
+      },
+    });
+  }, [timeframe]);
 
   const controls = onTimeframeChange ? (
     <div className={styles.controls} aria-label="Chart interval">

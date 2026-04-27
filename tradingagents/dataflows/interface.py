@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -35,6 +36,7 @@ from .intraday import get_intraday_bars as _get_intraday_bars_yfinance
 
 # Configuration and routing logic
 from .config import get_config
+from .session import to_session_tz
 
 
 _CACHE_LOCKS = {}
@@ -82,6 +84,26 @@ def _save_cached_result(path: Path, value) -> None:
         os.replace(tmp_path, path)
     except Exception:
         return
+
+
+def _intraday_tool_end_date(method: str, args, kwargs) -> Optional[str]:
+    if method == "get_intraday_stock_data":
+        return kwargs.get("end_date") or (args[1] if len(args) > 1 else None)
+    if method == "get_intraday_indicators":
+        return kwargs.get("end_date") or (args[2] if len(args) > 2 else None)
+    return None
+
+
+def _is_live_intraday_tool_call(method: str, args, kwargs) -> bool:
+    end_date = _intraday_tool_end_date(method, args, kwargs)
+    if not end_date:
+        return False
+    try:
+        requested_date = datetime.fromisoformat(str(end_date)).date()
+    except ValueError:
+        return False
+    session_today = to_session_tz(datetime.now(timezone.utc)).date()
+    return requested_date >= session_today
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -229,7 +251,11 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
-        cache_enabled = bool(config.get("data_cache_enabled", True))
+        cache_enabled = bool(config.get("data_cache_enabled", True)) and not _is_live_intraday_tool_call(
+            method,
+            args,
+            kwargs,
+        )
         cache_dir = config.get("data_cache_dir")
         refresh_cache = bool(config.get("data_cache_refresh", False))
 

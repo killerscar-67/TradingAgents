@@ -142,6 +142,13 @@ export interface IndexTile {
 export interface SectorTile {
   symbol: string;
   label?: string;
+  price?: number;
+  change_pct: number;
+}
+
+export interface SectorCompositeTile {
+  label: string;
+  price: number;
   change_pct: number;
 }
 
@@ -171,6 +178,7 @@ export interface MarketOverview {
   indices: IndexTile[];
   breadth: BreadthData;
   sectors?: SectorTile[];
+  sector_composite?: SectorCompositeTile;
   events?: MarketCalendarEvent[];
   calendar_status?: MarketCalendarStatus;
   finance_events?: MarketFinanceCalendarEvent[];

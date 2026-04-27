@@ -21,6 +21,7 @@ import yfinance.utils as yf_utils
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.interface import get_intraday_bars
+from tradingagents.dataflows.session import is_extended_session, to_session_tz
 from tradingagents.quant.backtest import run_backtest, run_trade_plan_backtest
 from tradingagents.quant.contracts import EntryEngine, EntrySignal
 from tradingagents.quant.risk import compute_stops, size_position
@@ -41,6 +42,9 @@ _CALENDAR_CACHE_TTL_SECONDS = 900.0
 _CALENDAR_EMPTY_CACHE_TTL_SECONDS = 60.0
 _CALENDAR_RATE_LIMIT_COOLDOWN_SECONDS = 600.0
 _calendar_cache_disk_loaded = False
+_chart_response_cache: Dict[Tuple[str, str, int, Optional[int], Optional[str], str], Dict[str, Any]] = {}
+_chart_response_cache_lock = threading.Lock()
+_CHART_CACHE_TTL_SECONDS = 30.0
 
 
 class CalendarProviderCooldownError(RuntimeError):
@@ -465,6 +469,43 @@ def _serialize_chart_payload(
         "points": points,
         "bars": bars,
     }
+
+
+def _chart_cache_key(
+    symbol: str,
+    interval: str,
+    limit: int,
+    before: Optional[int],
+    trade_date: Optional[str],
+    session: Optional[str],
+) -> Tuple[str, str, int, Optional[int], Optional[str], str]:
+    return (
+        symbol,
+        interval,
+        limit,
+        before,
+        trade_date,
+        (session or "").strip().lower() or "regular",
+    )
+
+
+def _get_cached_chart_payload(cache_key: Tuple[str, str, int, Optional[int], Optional[str], str]) -> Optional[Dict[str, Any]]:
+    now = time()
+    with _chart_response_cache_lock:
+        cached = _chart_response_cache.get(cache_key)
+        if cached and (now - float(cached.get("cached_at", 0.0))) < _CHART_CACHE_TTL_SECONDS:
+            return dict(cached.get("payload", {}))
+        if cached:
+            _chart_response_cache.pop(cache_key, None)
+    return None
+
+
+def _store_chart_payload(cache_key: Tuple[str, str, int, Optional[int], Optional[str], str], payload: Dict[str, Any]) -> None:
+    with _chart_response_cache_lock:
+        _chart_response_cache[cache_key] = {
+            "cached_at": time(),
+            "payload": dict(payload),
+        }
 
 
 def _download_daily_history(symbols: Iterable[str], start: str, end: str) -> Dict[str, pd.DataFrame]:
@@ -1120,22 +1161,41 @@ def get_market_overview(
             indices.append({"symbol": tile["symbol"], "label": tile["label"], "price": round(latest, 4), "change_pct": change_pct})
 
         sectors: List[Dict[str, Any]] = []
+        sector_composite_prices: List[float] = []
+        sector_composite_changes: List[float] = []
         for symbol, label in definition["sector_proxies"]:
             hist = histories.get(symbol, pd.DataFrame())
             closes = _history_series(hist, "Close")
             if closes.empty:
-                sectors.append({"symbol": symbol, "label": label, "change_pct": 0.0})
+                sectors.append({"symbol": symbol, "label": label, "price": 0.0, "change_pct": 0.0})
                 continue
             latest = float(closes.iloc[-1])
             prev = float(closes.iloc[-2]) if len(closes) > 1 else latest
             change_pct = 0.0 if prev == 0.0 else round(((latest / prev) - 1.0) * 100.0, 4)
-            sectors.append({"symbol": symbol, "label": label, "change_pct": change_pct})
+            sector_composite_prices.append(latest)
+            sector_composite_changes.append(change_pct)
+            sectors.append({"symbol": symbol, "label": label, "price": round(latest, 4), "change_pct": change_pct})
+
+        sector_composite: Dict[str, Any]
+        if sector_composite_prices:
+            sector_composite = {
+                "label": "Equal-weight sector composite",
+                "price": round(sum(sector_composite_prices) / len(sector_composite_prices), 4),
+                "change_pct": round(sum(sector_composite_changes) / len(sector_composite_changes), 4),
+            }
+        else:
+            sector_composite = {
+                "label": "Equal-weight sector composite",
+                "price": 0.0,
+                "change_pct": 0.0,
+            }
 
         region_payloads[region] = {
             "indices": indices,
             "regime": regime,
             "breadth": breadth,
             "sectors": sectors,
+            "sector_composite": sector_composite,
         }
 
     calendar_provider = settings.get("calendar_provider", "fmp")
@@ -1229,6 +1289,7 @@ def get_market_overview(
         "regime": home_payload["regime"],
         "breadth": home_payload["breadth"],
         "sectors": home_payload["sectors"],
+        "sector_composite": home_payload["sector_composite"],
         "events": events,
         "calendar_status": calendar_status,
         "finance_events": finance_events,
@@ -1253,6 +1314,7 @@ def get_market_chart(
     normalized_symbol = (symbol or "").strip().upper()
     normalized_interval = _normalize_chart_interval(interval)
     resolved_limit = _coerce_chart_limit(normalized_interval, limit)
+    chart_cache_key = _chart_cache_key(normalized_symbol, normalized_interval, resolved_limit, before, trade_date, session)
 
     if not normalized_symbol:
         return {
@@ -1265,6 +1327,10 @@ def get_market_chart(
             "points": [],
             "bars": [],
         }
+
+    cached_payload = _get_cached_chart_payload(chart_cache_key)
+    if cached_payload is not None:
+        return cached_payload
 
     config = CHART_INTERVAL_CONFIG[normalized_interval]
     anchor_dt = _chart_anchor_dt(trade_date, before)
@@ -1301,6 +1367,7 @@ def get_market_chart(
     has_more = len(chart_frame) > resolved_limit
     payload = _serialize_chart_payload(normalized_symbol, normalized_interval, resolved_limit, chart_frame.tail(resolved_limit))
     payload["has_more"] = has_more
+    _store_chart_payload(chart_cache_key, payload)
     return payload
 
 
@@ -1326,6 +1393,19 @@ def _build_screening_quant_config(entry_mode: str, request: Dict[str, Any]) -> D
     return config
 
 
+def _live_intraday_fetch_context(trade_date: str) -> Dict[str, Any]:
+    trade_dt = datetime.fromisoformat(trade_date)
+    now = datetime.now(timezone.utc)
+    end = (trade_dt.date() + timedelta(days=1)).isoformat()
+    if to_session_tz(now).date() == trade_dt.date() and is_extended_session(now):
+        return {
+            "end": end,
+            "as_of": now,
+            "session": "extended",
+        }
+    return {"end": end, "as_of": None, "session": None}
+
+
 def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> Dict[str, Any]:
     home_market = _resolve_screening_market(request.get("universe", ""), settings.get("home_market", "US"))
     screening_run = store.create_screening_run(
@@ -1348,6 +1428,7 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
     error_count = 0
     below_threshold_count = 0
     start = (datetime.fromisoformat(trade_date) - timedelta(days=45)).date().isoformat()
+    intraday_context = _live_intraday_fetch_context(trade_date)
     for symbol in symbols:
         market = _market_for_symbol(symbol, screening_run["home_market"])
         region_regime = overview["regions"].get(market, {}).get("regime", {})
@@ -1355,8 +1436,22 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
         entry_mode = region_regime.get("suggested_entry_mode", "auto") if strategy == "auto" else strategy
         errored = False
         try:
-            bars_15m = get_intraday_bars(symbol, "15m", start, trade_date)
-            bars_4h = get_intraday_bars(symbol, "4h", start, trade_date)
+            bars_15m = get_intraday_bars(
+                symbol,
+                "15m",
+                start,
+                intraday_context["end"],
+                as_of=intraday_context["as_of"],
+                session=intraday_context["session"],
+            )
+            bars_4h = get_intraday_bars(
+                symbol,
+                "4h",
+                start,
+                intraday_context["end"],
+                as_of=intraday_context["as_of"],
+                session=intraday_context["session"],
+            )
             from tradingagents.quant.engine import run_quant_engine
 
             contract = run_quant_engine(
@@ -1955,6 +2050,7 @@ def build_strategy_from_batch(request: Dict[str, Any], store, settings: Dict[str
     skipped: List[Dict[str, Any]] = []
     start = (datetime.fromisoformat(batch["analysis_date"]) - timedelta(days=30)).date().isoformat() if batch.get("analysis_date") else (date.today() - timedelta(days=30)).isoformat()
     trade_date = batch.get("analysis_date") or date.today().isoformat()
+    intraday_context = _live_intraday_fetch_context(trade_date)
 
     for item in batch.get("items", []):
         rating = str(item.get("rating", "HOLD")).upper()
@@ -1975,7 +2071,14 @@ def build_strategy_from_batch(request: Dict[str, Any], store, settings: Dict[str
         market = _market_for_symbol(symbol, strategy["home_market"])
         overview = get_market_overview(market, trade_date, settings)
         entry_mode = overview["regime"]["suggested_entry_mode"] if mode == "auto" else mode
-        bars_15m = get_intraday_bars(symbol, "15m", start, trade_date)
+        bars_15m = get_intraday_bars(
+            symbol,
+            "15m",
+            start,
+            intraday_context["end"],
+            as_of=intraday_context["as_of"],
+            session=intraday_context["session"],
+        )
         if bars_15m.empty:
             skipped.append({"symbol": symbol, "reason": "No intraday bars available"})
             continue

@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -15,6 +16,7 @@ from tradingagents.dataflows.interface import (
     TOOLS_CATEGORIES,
     VENDOR_METHODS,
     get_category_for_method,
+    route_to_vendor,
 )
 from tradingagents.dataflows.stockstats_utils import load_ohlcv_intraday
 
@@ -89,6 +91,37 @@ class VendorRegistrationTests(unittest.TestCase):
         self.assertEqual(get_category_for_method("get_intraday_indicators"), "technical_indicators")
         self.assertIn("yfinance", VENDOR_METHODS["get_intraday_stock_data"])
         self.assertIn("yfinance", VENDOR_METHODS["get_intraday_indicators"])
+
+
+class IntradayLiveCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.original_config = get_config()
+        set_config({"data_cache_dir": self.tmp, "data_cache_enabled": True, "data_cache_refresh": False})
+
+    def tearDown(self):
+        set_config(self.original_config)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_live_intraday_tool_calls_bypass_generic_tool_cache(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
+                return value if tz is None else value.astimezone(tz)
+
+        fake_impl = MagicMock(side_effect=["No intraday data found", "fresh premarket bars"])
+        with patch("tradingagents.dataflows.interface.datetime", FixedDateTime), patch.dict(
+            VENDOR_METHODS["get_intraday_stock_data"],
+            {"yfinance": fake_impl},
+            clear=True,
+        ):
+            first = route_to_vendor("get_intraday_stock_data", "AAPL", "2026-04-27", "5m", 5, True)
+            second = route_to_vendor("get_intraday_stock_data", "AAPL", "2026-04-27", "5m", 5, True)
+
+        self.assertEqual(first, "No intraday data found")
+        self.assertEqual(second, "fresh premarket bars")
+        self.assertEqual(fake_impl.call_count, 2)
 
 
 class IntradayToolDefaultsTests(unittest.TestCase):

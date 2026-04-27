@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -121,6 +122,7 @@ def _screening_regime(home_market: str = "US"):
         },
         "breadth": {},
         "sectors": [],
+        "sector_composite": {"label": "Equal-weight sector composite", "price": 0.0, "change_pct": 0.0},
         "events": [],
         "regions": {
             "US": {"regime": {"label": "Trending bull", "confidence": 82, "suggested_entry_mode": "breakout", "event_risk_flag": False}},
@@ -537,6 +539,25 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("^N225", requested_symbols)
         self.assertEqual(len(calls), 1)
 
+    def test_market_overview_includes_sector_prices_and_composite(self):
+        with patch("tradingagents.web.workflow_service._download_daily_history", side_effect=self._mock_market_download), patch(
+            "tradingagents.web.workflow_service._fetch_calendar_events",
+            return_value=[],
+        ), patch(
+            "tradingagents.web.workflow_service._fetch_finance_calendar_events",
+            return_value=[],
+        ):
+            resp = self.client.get("/api/market/overview?home_market=US&trade_date=2026-04-23")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("sector_composite", body)
+        self.assertGreaterEqual(body["sector_composite"]["price"], 0.0)
+        self.assertIn("change_pct", body["sector_composite"])
+        self.assertTrue(body["sectors"])
+        self.assertIn("price", body["sectors"][0])
+        self.assertIn("change_pct", body["sectors"][0])
+
     def test_daily_history_skips_known_unavailable_yahoo_symbols(self):
         from tradingagents.web.workflow_service import _download_daily_history
 
@@ -582,6 +603,19 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("close", body["bars"][0])
         self.assertEqual(body["oldest_time"], body["bars"][0]["time"])
         self.assertEqual(body["newest_time"], body["bars"][-1]["time"])
+
+    def test_market_chart_route_reuses_cached_payload_for_identical_queries(self):
+        import tradingagents.web.workflow_service as workflow_service
+
+        workflow_service._chart_response_cache.clear()
+        with patch("tradingagents.web.workflow_service._download_daily_history", return_value={"SPY": _make_daily_history()}) as mock_daily:
+            first = self.client.get("/api/market/chart?symbol=SPY&interval=1D&limit=40&trade_date=2026-04-23")
+            second = self.client.get("/api/market/chart?symbol=SPY&interval=1D&limit=40&trade_date=2026-04-23")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), second.json())
+        self.assertEqual(mock_daily.call_count, 1)
 
     def test_market_chart_route_supports_cursor_backfill(self):
         history = _make_daily_history(periods=260)
@@ -680,6 +714,82 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(len(basket_body["items"]), 2)
         self.assertEqual(basket_body["items"][0]["symbol"], "AAPL")
         self.assertEqual(basket_body["workflow_session_id"], body["workflow_session_id"])
+
+    def test_screening_live_premarket_fetches_current_session_bars(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
+                return value if tz is None else value.astimezone(tz)
+
+        def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
+            return self._quant_contract(symbol, 0.91, "buy", f"{symbol} premarket setup")
+
+        with patch("tradingagents.web.workflow_service.datetime", FixedDateTime), patch(
+            "tradingagents.web.workflow_service.get_market_overview",
+            return_value=_screening_regime(),
+        ), patch(
+            "tradingagents.web.workflow_service.get_intraday_bars",
+            return_value=_make_intraday_bars(),
+        ) as intraday, patch(
+            "tradingagents.quant.engine.run_quant_engine",
+            side_effect=fake_quant,
+        ):
+            screening = self.client.post(
+                "/api/screening/runs",
+                json={
+                    "universe": "CUSTOM",
+                    "strategy": "auto",
+                    "trade_date": "2026-04-27",
+                    "top_n": 1,
+                    "min_score": 0.5,
+                    "custom_symbols": ["AAPL"],
+                },
+            )
+
+        self.assertEqual(screening.status_code, 200)
+        first_call = intraday.call_args_list[0]
+        self.assertEqual(first_call.args[3], "2026-04-28")
+        self.assertEqual(first_call.kwargs["session"], "extended")
+        self.assertEqual(first_call.kwargs["as_of"], FixedDateTime.now(timezone.utc))
+
+    def test_screening_fetches_requested_historical_session_date(self):
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = cls(2026, 4, 27, 21, 0, tzinfo=timezone.utc)
+                return value if tz is None else value.astimezone(tz)
+
+        def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
+            return self._quant_contract(symbol, 0.91, "buy", f"{symbol} setup")
+
+        with patch("tradingagents.web.workflow_service.datetime", FixedDateTime), patch(
+            "tradingagents.web.workflow_service.get_market_overview",
+            return_value=_screening_regime(),
+        ), patch(
+            "tradingagents.web.workflow_service.get_intraday_bars",
+            return_value=_make_intraday_bars(),
+        ) as intraday, patch(
+            "tradingagents.quant.engine.run_quant_engine",
+            side_effect=fake_quant,
+        ):
+            screening = self.client.post(
+                "/api/screening/runs",
+                json={
+                    "universe": "CUSTOM",
+                    "strategy": "auto",
+                    "trade_date": "2026-04-23",
+                    "top_n": 1,
+                    "min_score": 0.5,
+                    "custom_symbols": ["AAPL"],
+                },
+            )
+
+        self.assertEqual(screening.status_code, 200)
+        first_call = intraday.call_args_list[0]
+        self.assertEqual(first_call.args[3], "2026-04-24")
+        self.assertIsNone(first_call.kwargs["session"])
+        self.assertIsNone(first_call.kwargs["as_of"])
 
     def test_screening_market_code_uses_requested_market_universe_and_conditions(self):
         def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
