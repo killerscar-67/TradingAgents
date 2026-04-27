@@ -11,7 +11,7 @@ function flattenSettings(raw: Record<string, unknown>): AppSettings {
 
   // Prefer nested keys, fall back to flat keys (legacy / test stubs).
   const topN = wd.top_n !== undefined ? Number(wd.top_n) : Number(raw.top_n ?? 20);
-  const scoreFloor = wd.min_score !== undefined ? Number(wd.min_score) : Number(raw.score_floor ?? 0.65);
+  const scoreFloor = wd.min_score !== undefined ? Number(wd.min_score) : Number(raw.score_floor ?? 0.3);
   // Backend decimal (0.01) → %; flat stubs already send percentage integers.
   const rawRisk = wd.risk_per_trade !== undefined
     ? Number(wd.risk_per_trade) * 100

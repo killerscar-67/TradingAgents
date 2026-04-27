@@ -36,7 +36,7 @@ export function ScreeningScreen() {
   const [runId, setRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [minScore, setMinScore] = useState(0.6);
+  const [minScore, setMinScore] = useState(0.3);
   const [maxResults, setMaxResults] = useState(20);
   const [universe, setUniverse] = useState(regime?.home_market ?? "US");
   const [strategyFilter, setStrategyFilter] = useState("all");

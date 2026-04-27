@@ -66,7 +66,7 @@ class ScreeningRunRequest(BaseModel):
     strategy: str = "auto"
     trade_date: str = Field(default_factory=lambda: date.today().isoformat())
     top_n: int = 20
-    min_score: float = 0.65
+    min_score: float = 0.3
     workflow_session_id: Optional[str] = None
     filters: Dict[str, bool] = Field(
         default_factory=lambda: {
