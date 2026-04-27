@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_insider_transactions,
     get_language_instruction,
+    run_analyst_loop,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -54,16 +55,8 @@ def create_fundamentals_analyst(llm):
 
         chain = prompt | llm.bind_tools(tools)
 
-        result = chain.invoke(state["messages"])
+        report = run_analyst_loop(chain, tools)
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "fundamentals_report": report,
-        }
+        return {"fundamentals_report": report}
 
     return fundamentals_analyst_node

@@ -21,6 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_language_instruction,
+    run_analyst_loop,
 )
 from tradingagents.agents.utils.intraday_tools import (
     get_intraday_indicators,
@@ -150,7 +151,6 @@ def create_intraday_market_analyst(llm):
 
         decisions: List[Dict[str, Any]] = []
         primary_report = ""
-        primary_message = None
 
         for variant in variants:
             directive = _VARIANT_DIRECTIVES.get(variant, _VARIANT_DIRECTIVES["default"])
@@ -189,23 +189,17 @@ def create_intraday_market_analyst(llm):
             prompt = prompt.partial(variant_name=variant)
 
             chain = prompt | llm.bind_tools(tools)
-            result = chain.invoke(state["messages"])
-
-            text = ""
-            if not getattr(result, "tool_calls", None):
-                text = result.content or ""
+            text = run_analyst_loop(chain, tools)
 
             decision = _extract_decision(text if isinstance(text, str) else "")
             decision["variant"] = variant
             decision["raw"] = text if isinstance(text, str) else str(text)
             decisions.append(decision)
 
-            if primary_message is None:
-                primary_message = result
+            if not primary_report:
                 primary_report = decision["raw"]
 
         return {
-            "messages": [primary_message] if primary_message is not None else [],
             "market_report": primary_report,
             "intraday_decisions": decisions,
         }
