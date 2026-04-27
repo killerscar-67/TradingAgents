@@ -1,9 +1,53 @@
 .shell {
   display: flex;
-  min-width: 1280px;
+  min-width: 0;
   height: 100vh;
   background: #0f1117;
   color: #e2e8f0;
+  overflow: hidden;
+}
+
+.autoAdvanceBanner {
+  position: fixed;
+  top: 0;
+  left: 240px;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 20px;
+  background: #1d4ed8;
+  color: #eff6ff;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.autoAdvanceBanner button {
+  padding: 4px 12px;
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 5px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.autoAdvanceBanner button:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+.bannerContent {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contentWithBanner {
+  padding-top: 36px;
 }
 
 .content {

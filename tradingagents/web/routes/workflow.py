@@ -21,6 +21,7 @@ from tradingagents.web.storage import get_workflow_store
 from tradingagents.web.workflow_service import (
     build_strategy_from_batch,
     cancel_batch,
+    finalize_stopped_batch,
     get_market_chart as build_market_chart,
     get_market_overview as build_market_overview,
     resolve_basket_items,
@@ -28,6 +29,7 @@ from tradingagents.web.workflow_service import (
     run_backtest_for_strategy,
     run_batch_analysis,
     run_screening,
+    stopped_batch_needs_reconciliation,
     stage_futu_strategy,
 )
 
@@ -330,6 +332,17 @@ def create_batch(req: BatchRequest) -> Dict[str, Any]:
 _BATCH_TERMINAL_STATUSES = {"completed", "error", "partial_failure", "stopped", "not_found"}
 
 
+@router.get("/api/batches/{batch_id}")
+def get_batch(batch_id: str) -> Dict[str, Any]:
+    store = get_workflow_store()
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    if stopped_batch_needs_reconciliation(batch):
+        batch = finalize_stopped_batch(batch_id, store) or batch
+    return {"batch": batch, "status": "ready"}
+
+
 @router.get("/api/batches/{batch_id}/events")
 async def stream_batch_events(batch_id: str) -> StreamingResponse:
     async def generator():
@@ -361,8 +374,12 @@ def stop_batch(batch_id: str) -> Dict[str, Any]:
     if batch is None:
         raise HTTPException(status_code=404, detail="batch not found")
     cancel_batch(batch_id)
-    store.update_analysis_batch(batch_id, status="stopped")
-    return {"batch_id": batch_id, "status": "stopped"}
+    updated = finalize_stopped_batch(batch_id, store)
+    return {
+        "batch_id": batch_id,
+        "status": "stopped",
+        "counts": (updated or batch).get("summary", {}).get("counts", {}),
+    }
 
 
 @router.post("/api/batches/{batch_id}/items/{symbol}/retry")

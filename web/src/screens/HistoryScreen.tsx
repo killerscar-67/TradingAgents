@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { RunDetail } from "../components/RunDetail";
 import { apiUrl } from "../apiBase";
+import { useWorkflow } from "../contexts/WorkflowContext";
 import type { HistoryItem } from "../types";
 import styles from "./HistoryScreen.module.css";
 
@@ -49,6 +50,7 @@ function formatRecordTime(timestamp: string | null): string {
 }
 
 export function HistoryScreen() {
+  const { setBatchId, setScreen } = useWorkflow();
   const [items, setItems] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
@@ -79,14 +81,25 @@ export function HistoryScreen() {
   };
 
   const handleRerun = (item: HistoryItem) => {
-    // Navigate to the appropriate screen with context pre-populated.
-    // For analysis runs, open the run detail; for batches navigate to batch screen.
+    if (item.type === "batch_analysis") {
+      setBatchId(item.id);
+      setScreen("batch", { userInitiated: true });
+      return;
+    }
     if (item.type === "legacy_analysis" || item.type === "analysis_run") {
       setDetailRunId(item.id);
     } else {
-      // For other types just open the detail.
       setDetailRunId(item.id);
     }
+  };
+
+  const handleView = (item: HistoryItem) => {
+    if (item.type === "batch_analysis") {
+      setBatchId(item.id);
+      setScreen("batch", { userInitiated: true });
+      return;
+    }
+    setDetailRunId(item.id);
   };
 
   if (detailRunId) {
@@ -163,7 +176,7 @@ export function HistoryScreen() {
                 {grouped[date].map((item) => {
                   const statusClass = normalizeHistoryStatus(item.status);
                   const recordTimestamp = item.completed_at || item.created_at;
-                  const canViewDetail = item.type === "legacy_analysis" || item.type === "analysis_run";
+                  const canViewDetail = item.type === "legacy_analysis" || item.type === "analysis_run" || item.type === "batch_analysis";
                   return (
                     <div key={item.id} className={styles.runRow}>
                       <span className={styles.runTicker}>{item.title}</span>
@@ -177,7 +190,7 @@ export function HistoryScreen() {
                       </span>
                       <span className={styles.actions}>
                         {canViewDetail && (
-                          <button type="button" onClick={() => setDetailRunId(item.id)}>
+                          <button type="button" onClick={() => handleView(item)}>
                             View
                           </button>
                         )}

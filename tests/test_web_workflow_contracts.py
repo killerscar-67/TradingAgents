@@ -849,6 +849,25 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertEqual(batch_events.status_code, 200)
             self.assertIn('"type": "batch_item"', batch_events.text)
 
+            batch_detail = self.client.get(f"/api/batches/{batch_body['batch_id']}")
+            self.assertEqual(batch_detail.status_code, 200)
+            batch_detail_body = batch_detail.json()
+            self.assertEqual(batch_detail_body["status"], "ready")
+            self.assertEqual(batch_detail_body["batch"]["batch_id"], batch_body["batch_id"])
+            self.assertEqual(batch_detail_body["batch"]["workflow_session_id"], batch_body["workflow_session_id"])
+            self.assertEqual(batch_detail_body["batch"]["items"][0]["symbol"], "AAPL")
+
+            analysis_detail = self.client.get(f"/api/analysis/{batch_body['items'][0]['run_id']}")
+            self.assertEqual(analysis_detail.status_code, 200)
+            analysis_detail_body = analysis_detail.json()
+            self.assertEqual(analysis_detail_body["ticker"], "AAPL")
+            self.assertEqual(analysis_detail_body["status"], "completed")
+            self.assertIn("BUY", analysis_detail_body["report_sections"]["final_trade_decision"])
+
+            analysis_events = self.client.get(f"/api/analysis/{batch_body['items'][0]['run_id']}/events")
+            self.assertEqual(analysis_events.status_code, 200)
+            self.assertIn('"run_id": "run-1"', analysis_events.text)
+
             strategy = self.client.post(
                 "/api/strategies/from-batch",
                 json={
@@ -1176,6 +1195,113 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["status"], "partial_failure")
         self.assertEqual(body["summary"]["counts"]["completed"], 1)
         self.assertEqual(body["summary"]["counts"]["failed"], 1)
+
+    def test_stopping_batch_reconciles_item_statuses_and_counts(self):
+        from tradingagents.web.storage import get_workflow_store
+
+        with patch("tradingagents.web.workflow_service.runner.create_run", return_value=SimpleNamespace(run_id="run-1")), patch(
+            "tradingagents.web.workflow_service.runner.run_sync",
+            side_effect=lambda run_id, config=None: (_ for _ in ()).throw(RuntimeError("should not complete after stop")),
+        ):
+            store = get_workflow_store()
+            batch = store.create_analysis_batch(
+                {
+                    "symbols": ["AAPL", "MSFT", "TSLA"],
+                    "analysis_date": "2026-04-23",
+                    "selected_analysts": ["market"],
+                    "execution_mode": "llm_assisted",
+                },
+                home_market="US",
+            )
+            store.update_analysis_batch(
+                batch["batch_id"],
+                status="running",
+                items=[
+                    {"symbol": "AAPL", "run_id": "run-1", "status": "running", "started_at": "2026-04-23T10:00:00Z"},
+                    {"symbol": "MSFT", "run_id": None, "status": "queued"},
+                    {"symbol": "TSLA", "run_id": None, "status": "queued"},
+                ],
+                summary={"counts": {"queued": 2, "running": 1, "completed": 0, "failed": 0, "skipped": 0}},
+                events=[
+                    {"type": "batch_status", "batch_id": batch["batch_id"], "status": "running", "timestamp": "2026-04-23T10:00:00Z"}
+                ],
+            )
+
+            resp = self.client.post(f"/api/batches/{batch['batch_id']}/stop")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "stopped")
+        self.assertEqual(body["counts"]["failed"], 1)
+        self.assertEqual(body["counts"]["skipped"], 2)
+
+        updated = get_workflow_store().get_analysis_batch(batch["batch_id"])
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated["status"], "stopped")
+        self.assertEqual(updated["summary"]["counts"]["failed"], 1)
+        self.assertEqual(updated["summary"]["counts"]["skipped"], 2)
+        by_symbol = {item["symbol"]: item for item in updated["items"]}
+        self.assertEqual(by_symbol["AAPL"]["status"], "failed")
+        self.assertIn("stopped", by_symbol["AAPL"]["error"].lower())
+        self.assertEqual(by_symbol["MSFT"]["status"], "skipped")
+        self.assertEqual(by_symbol["TSLA"]["status"], "skipped")
+        self.assertEqual(updated["events"][-1]["status"], "stopped")
+
+    def test_retrying_stopped_batch_item_reopens_batch_and_runs_item(self):
+        from tradingagents.web.storage import get_workflow_store
+        from tradingagents.web.workflow_service import cancel_batch
+
+        with patch("tradingagents.web.workflow_service.runner.create_run", return_value=SimpleNamespace(run_id="run-2")), patch(
+            "tradingagents.web.workflow_service.runner.run_sync",
+            return_value=SimpleNamespace(
+                status="completed",
+                final_order_intent={"rating": "BUY", "reason": "Recovered"},
+                report_sections={"final_trade_decision": "BUY AAPL"},
+                errors=[],
+                report_paths={"report.md": "/tmp/report-aapl.md"},
+            ),
+        ), patch("tradingagents.web.workflow_service._thread_cls", new=_FakeSyncThread):
+            store = get_workflow_store()
+            batch = store.create_analysis_batch(
+                {
+                    "symbols": ["AAPL", "MSFT"],
+                    "analysis_date": "2026-04-23",
+                    "selected_analysts": ["market"],
+                    "execution_mode": "llm_assisted",
+                },
+                home_market="US",
+            )
+            store.update_analysis_batch(
+                batch["batch_id"],
+                status="stopped",
+                items=[
+                    {"symbol": "AAPL", "run_id": "run-1", "status": "failed", "error": "Batch stopped before this ticker completed."},
+                    {"symbol": "MSFT", "run_id": None, "status": "skipped", "summary": "Skipped because the batch was stopped."},
+                ],
+                summary={"counts": {"queued": 0, "running": 0, "completed": 0, "failed": 1, "skipped": 1}},
+                events=[
+                    {"type": "batch_status", "batch_id": batch["batch_id"], "status": "stopped", "timestamp": "2026-04-23T10:00:00Z"}
+                ],
+            )
+            cancel_batch(batch["batch_id"])
+
+            resp = self.client.post(f"/api/batches/{batch['batch_id']}/items/AAPL/retry")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "queued")
+
+        updated = get_workflow_store().get_analysis_batch(batch["batch_id"])
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated["status"], "completed")
+        by_symbol = {item["symbol"]: item for item in updated["items"]}
+        self.assertEqual(by_symbol["AAPL"]["status"], "completed")
+        self.assertEqual(by_symbol["AAPL"]["rating"], "BUY")
+        self.assertEqual(updated["summary"]["counts"]["completed"], 1)
+        self.assertEqual(updated["summary"]["counts"]["skipped"], 1)
+        self.assertEqual(updated["events"][-1]["status"], "completed")
 
     def test_settings_watchlists_presets_and_session_market_persist(self):
         initial_settings = self.client.get("/api/settings")

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { WorkflowProvider } from "../contexts/WorkflowContext";
+import { useEffect } from "react";
+import { WorkflowProvider, useWorkflow } from "../contexts/WorkflowContext";
 import { BatchScreen } from "./BatchScreen";
 
 const batchResponse = { batch_id: "batch-001", status: "contract_ready" };
@@ -33,6 +34,21 @@ function stubFetch() {
   const mock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === "/api/batches" && init?.method === "POST") {
       return { ok: true, json: async () => batchResponse };
+    }
+    if (url === "/api/batches/batch-001" && !init?.method) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: "ready",
+          batch: {
+            batch_id: "batch-001",
+            status: "completed",
+            symbols: ["AMD"],
+            items: [{ symbol: "AMD", run_id: "run-amd", status: "completed", rating: "BUY" }],
+            events: [{ type: "batch_item", symbol: "AMD", status: "completed", timestamp: 1 }],
+          },
+        }),
+      };
     }
     if (url === "/api/batches/batch-001/stop" && init?.method === "POST") {
       return { ok: true, json: async () => ({ status: "stopped" }) };
@@ -247,7 +263,129 @@ describe("BatchScreen", () => {
         expect.objectContaining({ method: "POST" })
       )
     );
+    await waitFor(() => expect(screen.queryByRole("button", { name: /skip amd/i })).not.toBeInTheDocument());
+  });
+
+  it("allows skipping a failed ticker before retrying", async () => {
+    stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "AMD" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    MockEventSource.instances[0].emit({
+      type: "batch_item",
+      batch_id: "batch-001",
+      symbol: "AMD",
+      run_id: "run-amd",
+      status: "error",
+      error: "failed",
+      timestamp: 1,
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /skip amd/i })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /skip amd/i }));
     expect(screen.queryByText("AMD")).not.toBeInTheDocument();
+  });
+
+  it("hydrates an existing saved batch from its id", async () => {
+    stubFetch();
+
+    function SeedBatchId() {
+      const { setBatchId } = useWorkflow();
+      useEffect(() => {
+        setBatchId("batch-001");
+      }, [setBatchId]);
+      return null;
+    }
+
+    render(
+      <WorkflowProvider>
+        <SeedBatchId />
+        <BatchScreen />
+      </WorkflowProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText("AMD")).toBeInTheDocument());
+    expect(screen.getByText("BUY")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /start batch analysis/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /stop all/i })).not.toBeInTheDocument();
+  });
+
+  it("allows clearing the current batch view to start a new batch", async () => {
+    stubFetch();
+
+    function SeedBatchId() {
+      const { setBatchId } = useWorkflow();
+      useEffect(() => {
+        setBatchId("batch-001");
+      }, [setBatchId]);
+      return null;
+    }
+
+    render(
+      <WorkflowProvider>
+        <SeedBatchId />
+        <BatchScreen />
+      </WorkflowProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText("AMD")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /start new batch/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /start batch analysis/i })).toBeInTheDocument());
+    expect(screen.queryByText("BUY")).not.toBeInTheDocument();
+  });
+
+  it("clears stopped-batch error state and reconnects when retrying a ticker", async () => {
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/batches/batch-001" && !init?.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "ready",
+            batch: {
+              batch_id: "batch-001",
+              status: "stopped",
+              symbols: ["AMD"],
+              items: [{ symbol: "AMD", run_id: "run-amd", status: "failed", error: "Batch stopped before this ticker completed." }],
+              events: [{ type: "batch_status", status: "stopped", timestamp: 1 }],
+            },
+          }),
+        };
+      }
+      if (url === "/api/batches/batch-001/items/AMD/retry" && init?.method === "POST") {
+        return { ok: true, json: async () => ({ status: "queued" }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", mock);
+    MockEventSource.reset();
+    vi.stubGlobal("EventSource", MockEventSource);
+
+    function SeedBatchId() {
+      const { setBatchId } = useWorkflow();
+      useEffect(() => {
+        setBatchId("batch-001");
+      }, [setBatchId]);
+      return null;
+    }
+
+    render(
+      <WorkflowProvider>
+        <SeedBatchId />
+        <BatchScreen />
+      </WorkflowProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText(/batch stopped before this ticker completed/i)).toBeInTheDocument());
+    expect(MockEventSource.instances).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /retry amd/i }));
+    await waitFor(() => expect(mock).toHaveBeenCalledWith(
+      "/api/batches/batch-001/items/AMD/retry",
+      expect.objectContaining({ method: "POST" })
+    ));
+    await waitFor(() => expect(screen.queryByText(/batch stopped before this ticker completed/i)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("queued")).toBeInTheDocument());
+    expect(MockEventSource.instances).toHaveLength(2);
   });
 });

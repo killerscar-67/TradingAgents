@@ -382,6 +382,15 @@ export function MarketScreen() {
               </div>
               <div className={styles.regimeDate}>As of {tradeDate ?? "latest session"}</div>
             </div>
+            {!autoAdvance && (
+              <button
+                type="button"
+                className={styles.continueBtn}
+                onClick={() => setScreen("screen")}
+              >
+                Continue to Screening →
+              </button>
+            )}
           </section>
 
           <section className={styles.section}>

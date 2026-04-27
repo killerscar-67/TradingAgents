@@ -23,7 +23,7 @@ type Action =
   | { type: "SET_BASKET"; basket: BasketData }
   | { type: "SET_SCREENING_RUN_ID"; id: string }
   | { type: "SET_BASKET_ID"; id: string }
-  | { type: "SET_BATCH_ID"; id: string }
+  | { type: "SET_BATCH_ID"; id: string | null }
   | { type: "UPDATE_BATCH_RESULT"; ticker: string; item: BatchItem }
   | { type: "SET_STRATEGY_ID"; id: string; plan: TradePlan }
   | { type: "SET_BACKTEST_ID"; id: string };
@@ -84,7 +84,7 @@ interface WorkflowContextValue extends WorkflowState {
   setBasket: (b: BasketData) => void;
   setScreeningRunId: (id: string) => void;
   setBasketId: (id: string) => void;
-  setBatchId: (id: string) => void;
+  setBatchId: (id: string | null) => void;
   updateBatchResult: (ticker: string, item: BatchItem) => void;
   setStrategyId: (id: string, plan: TradePlan) => void;
   setBacktestId: (id: string) => void;
@@ -119,7 +119,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "SET_BASKET_ID", id });
   }, []);
 
-  const setBatchId = useCallback((id: string) => {
+  const setBatchId = useCallback((id: string | null) => {
     dispatch({ type: "SET_BATCH_ID", id });
   }, []);
 

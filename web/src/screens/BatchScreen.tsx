@@ -8,6 +8,8 @@ import { apiUrl } from "../apiBase";
 import type { BatchItem } from "../types";
 import styles from "./BatchScreen.module.css";
 
+const TERMINAL_BATCH_STATUSES = new Set(["completed", "error", "partial_failure", "stopped", "not_found"]);
+
 function normalizeBatchStatus(status?: string): BatchItem["status"] {
   switch ((status ?? "").toLowerCase()) {
     case "completed":
@@ -23,19 +25,88 @@ function normalizeBatchStatus(status?: string): BatchItem["status"] {
   }
 }
 
+type TradingStyle = "swing" | "daytrade";
+
+const INTRADAY_INTERVALS = ["1m", "5m", "15m", "30m", "1h"];
+
 export function BatchScreen() {
   const { basket, basketId, setBatchId, updateBatchResult, batchId, batchResults, setScreen, autoAdvance } = useWorkflow();
   const [symbols, setSymbols] = useState<string[]>(basket?.symbols ?? []);
   const [inputVal, setInputVal] = useState("");
+  const [tradingStyle, setTradingStyle] = useState<TradingStyle>("swing");
+  const [intradayInterval, setIntradayInterval] = useState("5m");
+  const [tradeDatetime, setTradeDatetime] = useState("");
   const [batchStarted, setBatchStarted] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmStopOpen, setConfirmStopOpen] = useState(false);
   const [latestPhase, setLatestPhase] = useState<Record<string, string>>({});
+  const [eventStreamRestartKey, setEventStreamRestartKey] = useState(0);
   const lastProcessedEventIndex = useRef(0);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  const { events, done } = useBatchEvents(batchStarted ? batchId : null);
+  const { events, done } = useBatchEvents(batchStarted ? batchId : null, eventStreamRestartKey);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!batchId || batchStarted) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void fetch(apiUrl(`/api/batches/${batchId}`))
+      .then(async (resp) => {
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        return resp.json();
+      })
+      .then((data) => {
+        if (cancelled || !data?.batch) {
+          return;
+        }
+        const batch = data.batch as {
+          symbols?: string[];
+          items?: Array<{ symbol?: string; run_id?: string | null; status?: string; rating?: string | null; error?: string | null }>;
+          events?: Array<{ symbol?: string; phase?: string }>;
+          status?: string;
+        };
+        setSymbols(batch.symbols ?? []);
+        setLatestPhase(() => {
+          const next: Record<string, string> = {};
+          for (const event of batch.events ?? []) {
+            if (event.symbol && event.phase) {
+              next[event.symbol] = event.phase;
+            }
+          }
+          return next;
+        });
+        for (const item of batch.items ?? []) {
+          if (!item?.symbol) continue;
+          updateBatchResult(item.symbol, {
+            ticker: item.symbol,
+            run_id: item.run_id ?? null,
+            status: normalizeBatchStatus(item.status),
+            rating: item.rating ?? null,
+            error: item.error ?? null,
+          });
+        }
+        setBatchStatus(batch.status ?? null);
+        setBatchStarted(true);
+        setError(null);
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setError(String(fetchError));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [batchId, batchStarted, updateBatchResult]);
 
   useEffect(() => {
     if (events.length < lastProcessedEventIndex.current) {
@@ -48,6 +119,9 @@ export function BatchScreen() {
     for (const event of pendingEvents) {
       if (event.symbol && event.phase) {
         setLatestPhase((prev) => ({ ...prev, [event.symbol as string]: event.phase as string }));
+      }
+      if (event.type === "batch_status" && event.status) {
+        setBatchStatus(event.status);
       }
       if (!event.symbol || !event.status) continue;
       updateBatchResult(event.symbol, {
@@ -98,8 +172,12 @@ export function BatchScreen() {
   const startBatch = async () => {
     setError(null);
     try {
-      const body: Record<string, unknown> = { symbols };
+      const body: Record<string, unknown> = { symbols, trading_style: tradingStyle };
       if (basketId) body.basket_id = basketId;
+      if (tradingStyle === "daytrade") {
+        body.intraday_interval = intradayInterval;
+        if (tradeDatetime) body.trade_datetime = tradeDatetime;
+      }
       const resp = await fetch(apiUrl("/api/batches"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -108,6 +186,7 @@ export function BatchScreen() {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       setBatchId(data.batch_id);
+      setBatchStatus(data.status ?? null);
       for (const item of data.items ?? []) {
         if (!item?.symbol) continue;
         updateBatchResult(item.symbol, {
@@ -127,13 +206,47 @@ export function BatchScreen() {
   const stopBatch = async () => {
     if (!batchId) return;
     await fetch(apiUrl(`/api/batches/${batchId}/stop`), { method: "POST" });
+    setBatchStatus("stopped");
     setBatchStarted(false);
     setConfirmStopOpen(false);
   };
 
+  const startNewBatch = () => {
+    setBatchId(null);
+    setBatchStarted(false);
+    setBatchStatus(null);
+    setLatestPhase({});
+    setEventStreamRestartKey(0);
+    setError(null);
+    setInputVal("");
+    setTradingStyle("swing");
+    setIntradayInterval("5m");
+    setTradeDatetime("");
+    setSymbols(basket?.symbols ?? []);
+  };
+
   const retryTicker = async (symbol: string) => {
     if (!batchId) return;
-    await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/retry`), { method: "POST" });
+    updateBatchResult(symbol, {
+      ticker: symbol,
+      run_id: null,
+      status: "queued",
+      rating: null,
+      error: null,
+    });
+    setBatchStatus("running");
+    setLatestPhase((prev) => {
+      const next = { ...prev };
+      delete next[symbol];
+      return next;
+    });
+    setBatchStarted(true);
+
+    const resp = await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/retry`), { method: "POST" });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    setEventStreamRestartKey((value) => value + 1);
   };
 
   const skipTicker = (symbol: string) => {
@@ -148,6 +261,7 @@ export function BatchScreen() {
   const hasPartialFailure = resultsList.some((r) => r.status === "error");
   const readyCount = resultsList.filter((r) => r.status === "completed").length;
   const feedEvents = events.slice(-50);
+  const isTerminalBatch = batchStatus ? TERMINAL_BATCH_STATUSES.has(batchStatus.toLowerCase()) : done;
 
   const formatEventTime = (timestamp?: number | string) => {
     if (timestamp === undefined || timestamp === null || timestamp === "") {
@@ -171,7 +285,12 @@ export function BatchScreen() {
             label={`${basket.symbols.length} tickers (from Screening)`}
           />
         )}
-        {batchStarted && !done && (
+        {batchStarted && (
+          <button className={styles.addBtn} type="button" onClick={startNewBatch}>
+            Start new batch
+          </button>
+        )}
+        {batchStarted && !isTerminalBatch && (
           <button className={styles.stopBtn} type="button" onClick={() => setConfirmStopOpen(true)}>
             Stop all
           </button>
@@ -184,6 +303,50 @@ export function BatchScreen() {
             <p className={styles.hint}>
               Add tickers below or run Screening first to build a basket.
             </p>
+          )}
+
+          <div className={styles.styleRow}>
+            {(["swing", "daytrade"] as TradingStyle[]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                className={`${styles.styleBtn} ${tradingStyle === s ? styles.styleBtnActive : ""}`}
+                onClick={() => setTradingStyle(s)}
+              >
+                {s === "swing" ? "Swing" : "Daytrade"}
+              </button>
+            ))}
+          </div>
+
+          {tradingStyle === "daytrade" && (
+            <div className={styles.intradayFields}>
+              <div>
+                <label className={styles.fieldLabel} htmlFor="intraday-interval">Interval</label>
+                <select
+                  id="intraday-interval"
+                  className={styles.fieldInput}
+                  value={intradayInterval}
+                  onChange={(e) => setIntradayInterval(e.target.value)}
+                >
+                  {INTRADAY_INTERVALS.map((iv) => (
+                    <option key={iv} value={iv}>{iv}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={styles.fieldLabel} htmlFor="trade-datetime">
+                  Trade datetime (optional, e.g. 2026-04-27 09:30)
+                </label>
+                <input
+                  id="trade-datetime"
+                  type="text"
+                  className={styles.fieldInput}
+                  placeholder="YYYY-MM-DD HH:MM"
+                  value={tradeDatetime}
+                  onChange={(e) => setTradeDatetime(e.target.value)}
+                />
+              </div>
+            </div>
           )}
 
           <div className={styles.tickerList}>

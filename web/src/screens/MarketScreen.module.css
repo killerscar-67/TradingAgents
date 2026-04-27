@@ -27,7 +27,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #475569;
+  background: #fbbf24;
 }
 
 .liveDotActive {
@@ -133,7 +133,24 @@
 
 .regimeDate {
   font-size: 12px;
-  color: #475569;
+  color: #64748b;
+}
+
+.continueBtn {
+  align-self: flex-start;
+  padding: 8px 18px;
+  background: #1d4ed8;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.continueBtn:hover {
+  background: #2563eb;
 }
 
 .indexGrid {

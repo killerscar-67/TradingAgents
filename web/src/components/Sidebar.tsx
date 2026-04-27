@@ -9,14 +9,14 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { screen: "market", label: "Market", icon: "◈" },
-  { screen: "screen", label: "Screening", icon: "⊞" },
-  { screen: "batch", label: "Batch Analysis", icon: "⊟" },
-  { screen: "strategy", label: "Strategy", icon: "◉" },
-  { screen: "backtest", label: "Backtest", icon: "⊕" },
-  { screen: "history", label: "History", icon: "☰" },
-  { screen: "journal", label: "Journal", icon: "□" },
-  { screen: "settings", label: "Settings", icon: "⊙" },
+  { screen: "market",   label: "Market",        icon: "M" },
+  { screen: "screen",   label: "Screening",     icon: "S" },
+  { screen: "batch",    label: "Batch Analysis",icon: "B" },
+  { screen: "strategy", label: "Strategy",      icon: "T" },
+  { screen: "backtest", label: "Backtest",      icon: "K" },
+  { screen: "history",  label: "History",       icon: "H" },
+  { screen: "journal",  label: "Journal",       icon: "J" },
+  { screen: "settings", label: "Settings",      icon: "G" },
 ];
 
 export function Sidebar() {

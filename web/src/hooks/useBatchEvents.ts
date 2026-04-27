@@ -15,7 +15,7 @@ export interface BatchEvent {
   timestamp?: number | string;
 }
 
-export function useBatchEvents(batchId: string | null) {
+export function useBatchEvents(batchId: string | null, restartKey = 0) {
   const [events, setEvents] = useState<BatchEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [done, setDone] = useState(false);
@@ -61,7 +61,7 @@ export function useBatchEvents(batchId: string | null) {
       es.close();
       setConnected(false);
     };
-  }, [batchId]);
+  }, [batchId, restartKey]);
 
   return { events, connected, done };
 }

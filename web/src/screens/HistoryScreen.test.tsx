@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { HistoryScreen } from "./HistoryScreen";
-import { WorkflowProvider } from "../contexts/WorkflowContext";
+import { WorkflowProvider, useWorkflow } from "../contexts/WorkflowContext";
 
 function stubFetch(items = [
   {
@@ -43,9 +43,17 @@ function stubFetch(items = [
 describe("HistoryScreen", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  function renderScreen() {
+    return render(
+      <WorkflowProvider>
+        <HistoryScreen />
+      </WorkflowProvider>
+    );
+  }
+
   it("renders history items from the backend envelope", async () => {
     stubFetch();
-    render(<HistoryScreen />);
+    renderScreen();
     await waitFor(() => expect(screen.getByText("Breakout v2")).toBeInTheDocument());
     expect(screen.getByText("strategy plan")).toBeInTheDocument();
     expect(screen.getByText("4 trades · gross 42%")).toBeInTheDocument();
@@ -67,7 +75,7 @@ describe("HistoryScreen", () => {
       },
     ]);
 
-    render(<HistoryScreen />);
+    renderScreen();
 
     await waitFor(() => expect(screen.getByText("AAPL")).toBeInTheDocument());
     expect(
@@ -82,11 +90,7 @@ describe("HistoryScreen", () => {
 
   it("filters history by search, type, and status and renders secondary actions", async () => {
     stubFetch();
-    render(
-      <WorkflowProvider>
-        <HistoryScreen />
-      </WorkflowProvider>
-    );
+    renderScreen();
     await waitFor(() => expect(screen.getByText("Breakout v2")).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText(/search history/i), { target: { value: "aapl" } });
     expect(screen.queryByText("Breakout v2")).not.toBeInTheDocument();
@@ -97,5 +101,37 @@ describe("HistoryScreen", () => {
     expect(screen.getByText("Breakout v2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /re-run breakout v2/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /export breakout v2/i })).toBeInTheDocument();
+  });
+
+  it("opens saved batch analysis records in the batch screen", async () => {
+    stubFetch([
+      {
+        id: "batch-001",
+        type: "batch_analysis",
+        title: "AAPL, MSFT",
+        status: "completed",
+        created_at: "2026-04-24T13:05:00Z",
+        completed_at: "2026-04-24T13:37:00Z",
+        home_market: "US",
+        workflow_session_id: "session-1",
+        summary: "2 completed",
+      },
+    ]);
+
+    function WorkflowProbe() {
+      const { screen: currentScreen, batchId } = useWorkflow();
+      return <div>{`${currentScreen}:${batchId ?? "none"}`}</div>;
+    }
+
+    render(
+      <WorkflowProvider>
+        <HistoryScreen />
+        <WorkflowProbe />
+      </WorkflowProvider>
+    );
+
+    await waitFor(() => expect(screen.getByText("AAPL, MSFT")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /re-run aapl, msft/i }));
+    await waitFor(() => expect(screen.getByText("batch:batch-001")).toBeInTheDocument());
   });
 });

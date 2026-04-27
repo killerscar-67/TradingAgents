@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from tradingagents.web import runner
+from tradingagents.web.routes.analysis import _resolve_run
 
 router = APIRouter(prefix="/api/analysis", tags=["consultant"])
 
@@ -31,7 +31,7 @@ def chat_trade_review(*args: Any, **kwargs: Any) -> Any:
 
 @router.post("/{run_id}/consultant/chat")
 def consultant_chat(run_id: str, req: ConsultantChatRequest) -> Dict[str, Any]:
-    run = runner.get_run(run_id)
+    run = _resolve_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
 

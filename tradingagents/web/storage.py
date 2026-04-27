@@ -664,6 +664,45 @@ class WorkflowStore:
             "events": _json_loads(row["events_json"], fallback=[]),
         }
 
+    def find_analysis_run_archive(self, run_id: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT batch_id, analysis_date, selected_analysts_json,
+                       execution_mode, llm_provider, deep_think_llm, quick_think_llm,
+                       created_at, updated_at, request_json, items_json, events_json
+                FROM analysis_batches
+                """
+            ).fetchall()
+        for row in rows:
+            items = _json_loads(row["items_json"], fallback=[])
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict) or item.get("run_id") != run_id:
+                    continue
+                request = _json_loads(row["request_json"], fallback={})
+                events = _json_loads(row["events_json"], fallback=[])
+                return {
+                    "batch_id": row["batch_id"],
+                    "analysis_date": row["analysis_date"],
+                    "selected_analysts": _json_loads(row["selected_analysts_json"], fallback=[]),
+                    "execution_mode": row["execution_mode"],
+                    "llm_provider": row["llm_provider"],
+                    "deep_think_llm": row["deep_think_llm"],
+                    "quick_think_llm": row["quick_think_llm"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "request": request if isinstance(request, dict) else {},
+                    "item": item,
+                    "events": [
+                        event
+                        for event in events
+                        if isinstance(event, dict) and event.get("run_id") == run_id
+                    ] if isinstance(events, list) else [],
+                }
+        return None
+
     def create_strategy_plan(
         self,
         payload: Dict[str, Any],
