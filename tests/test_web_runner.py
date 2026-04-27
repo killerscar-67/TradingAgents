@@ -14,6 +14,8 @@ from tradingagents.web.runner import (
     get_event_queue,
     get_run,
     load_events_from_disk,
+    load_report_sections_from_events,
+    run_resumed_sync,
     run_sync,
 )
 
@@ -280,6 +282,87 @@ class RunSyncTests(unittest.TestCase):
         self.assertEqual(result.session_phase, "regular")
         self.assertEqual(result.data_session_date, "2026-04-23")
 
+    def test_resumed_sync_runs_remaining_downstream_phases(self):
+        run = _make_run(selected_analysts=["market"])
+
+        class FakeConditionalLogic:
+            def __init__(self):
+                self.risk_calls = 0
+
+            def should_continue_debate(self, state):
+                return "Research Manager"
+
+            def should_continue_risk_analysis(self, state):
+                self.risk_calls += 1
+                return "Aggressive Analyst" if self.risk_calls == 1 else "Portfolio Manager"
+
+        def fake_graph_factory(selected_analysts, config):
+            graph = MagicMock()
+            graph.quick_thinking_llm = object()
+            graph.deep_thinking_llm = object()
+            graph.bull_memory = MagicMock()
+            graph.bear_memory = MagicMock()
+            graph.trader_memory = MagicMock()
+            graph.invest_judge_memory = MagicMock()
+            graph.portfolio_manager_memory = MagicMock()
+            graph.conditional_logic = FakeConditionalLogic()
+            graph.propagator.create_initial_state.return_value = {
+                "messages": [],
+                "company_of_interest": "AAPL",
+                "trade_date": "2026-04-23",
+                "trade_datetime": "",
+                "session_phase": "",
+                "minutes_to_close": 0,
+                "data_session_date": "",
+                "intraday_decisions": [],
+                "investment_debate_state": {"bull_history": "", "bear_history": "", "history": "", "current_response": "", "judge_decision": "", "count": 0},
+                "risk_debate_state": {"aggressive_history": "", "conservative_history": "", "neutral_history": "", "history": "", "latest_speaker": "", "current_aggressive_response": "", "current_conservative_response": "", "current_neutral_response": "", "judge_decision": "", "count": 0},
+                "market_report": "Recovered market report",
+                "sentiment_report": "",
+                "news_report": "",
+                "fundamentals_report": "",
+                "analysis_brief": {},
+            }
+            graph.build_order_intent.return_value = {
+                "rating": "BUY",
+                "blocked": False,
+                "source": "llm_assisted",
+                "execution_mode": "llm_assisted",
+                "reason": "Resumed path",
+                "annotations": {},
+                "symbol": "AAPL",
+                "trade_date": "2026-04-23",
+            }
+            return graph
+
+        with patch("tradingagents.agents.create_research_manager", return_value=lambda state: {
+            "investment_debate_state": {"bull_history": "", "bear_history": "", "history": "", "current_response": "", "judge_decision": "Recovered research plan", "count": 0},
+            "investment_plan": "Recovered research plan",
+        }), patch("tradingagents.agents.create_trader", return_value=lambda state: {
+            "trader_investment_plan": "Trader resumed plan",
+            "messages": [],
+            "sender": "Trader",
+        }), patch("tradingagents.agents.create_aggressive_debator", return_value=lambda state: {
+            "risk_debate_state": {"history": "Aggressive Analyst: go", "aggressive_history": "Aggressive Analyst: go", "conservative_history": "", "neutral_history": "", "latest_speaker": "Aggressive", "current_aggressive_response": "Aggressive Analyst: go", "current_conservative_response": "", "current_neutral_response": "", "judge_decision": "", "count": 1},
+        }), patch("tradingagents.agents.create_portfolio_manager", return_value=lambda state: {
+            "risk_debate_state": {"history": "Aggressive Analyst: go", "aggressive_history": "Aggressive Analyst: go", "conservative_history": "", "neutral_history": "", "latest_speaker": "Judge", "current_aggressive_response": "Aggressive Analyst: go", "current_conservative_response": "", "current_neutral_response": "", "judge_decision": "Risk approved", "count": 1},
+            "final_trade_decision": "BUY",
+        }), patch("tradingagents.agents.create_bull_researcher"), patch("tradingagents.agents.create_bear_researcher"), patch("tradingagents.agents.create_conservative_debator"), patch("tradingagents.agents.create_neutral_debator"):
+            result = run_resumed_sync(
+                run.run_id,
+                resume_from="trader",
+                checkpoint_sections={
+                    "market_report": "Recovered market report",
+                    "investment_debate_judge_decision": "Recovered research plan",
+                },
+                _graph_factory=fake_graph_factory,
+                _save_report=MagicMock(),
+            )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.report_sections["trader_investment_plan"], "Trader resumed plan")
+        self.assertEqual(result.report_sections["final_trade_decision"], "BUY")
+
 
 class LoadEventsFromDiskTests(unittest.TestCase):
     def test_returns_empty_for_missing_file(self):
@@ -290,6 +373,17 @@ class LoadEventsFromDiskTests(unittest.TestCase):
     def test_returns_empty_for_unknown_run(self):
         events = load_events_from_disk("nonexistent-id")
         self.assertEqual(events, [])
+
+    def test_load_report_sections_from_events_extracts_latest_sections(self):
+        run = _make_run()
+        with patch.object(runner_module, "load_events_from_disk", return_value=[
+            {"type": "report_section", "payload": {"key": "market_report", "content": "Market one"}},
+            {"type": "report_section", "payload": {"key": "market_report", "content": "Market two"}},
+            {"type": "agent_status", "payload": {"agent": "Trader", "status": "completed"}},
+        ]):
+            sections = load_report_sections_from_events(run.run_id)
+
+        self.assertEqual(sections["market_report"], "Market two")
 
 
 if __name__ == "__main__":

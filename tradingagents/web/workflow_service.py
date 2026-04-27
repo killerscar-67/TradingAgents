@@ -31,6 +31,8 @@ from tradingagents.web import runner
 _cancelled_batches: set = set()
 _cancelled_lock = threading.Lock()
 _thread_cls = threading.Thread  # test-injectable; patching threading.Thread globally breaks anyio
+_batch_state_locks: Dict[str, threading.Lock] = {}
+_batch_state_locks_lock = threading.Lock()
 _LOGGER = logging.getLogger(__name__)
 _calendar_response_cache: Dict[Tuple[str, str, str, str, str], Dict[str, Any]] = {}
 _calendar_rate_limit_cooldowns: Dict[Tuple[str, str, str, str, str], float] = {}
@@ -63,6 +65,55 @@ def resume_batch(batch_id: str) -> None:
 def _is_cancelled(batch_id: str) -> bool:
     with _cancelled_lock:
         return batch_id in _cancelled_batches
+
+
+def _get_batch_state_lock(batch_id: str) -> threading.Lock:
+    with _batch_state_locks_lock:
+        lock = _batch_state_locks.get(batch_id)
+        if lock is None:
+            lock = threading.Lock()
+            _batch_state_locks[batch_id] = lock
+        return lock
+
+
+def _batch_worker_limit(payload: Dict[str, Any], settings: Dict[str, Any], item_count: int) -> int:
+    raw_value = (
+        payload.get("max_concurrent")
+        or settings.get("batch_max_concurrency")
+        or os.getenv("TRADINGAGENTS_BATCH_MAX_CONCURRENCY")
+        or 2
+    )
+    try:
+        requested = int(raw_value)
+    except (TypeError, ValueError):
+        requested = 2
+    return max(1, min(requested, max(item_count, 1)))
+
+
+def _thread_is_alive(thread: Any) -> bool:
+    checker = getattr(thread, "is_alive", None)
+    if callable(checker):
+        return bool(checker())
+    return False
+
+
+def _join_thread(thread: Any, timeout: Optional[float] = None) -> None:
+    joiner = getattr(thread, "join", None)
+    if callable(joiner):
+        if timeout is None:
+            joiner()
+        else:
+            joiner(timeout)
+
+
+def _reap_finished_threads(threads: List[Any]) -> List[Any]:
+    active: List[Any] = []
+    for thread in threads:
+        if _thread_is_alive(thread):
+            active.append(thread)
+        else:
+            _join_thread(thread)
+    return active
 
 
 MARKET_DEFINITIONS: Dict[str, Dict[str, Any]] = {
@@ -1388,52 +1439,53 @@ def _batch_terminal_status(counts: Dict[str, int]) -> str:
 
 
 def finalize_stopped_batch(batch_id: str, store) -> Optional[Dict[str, Any]]:
-    batch = store.get_analysis_batch(batch_id)
-    if batch is None:
-        return None
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            return None
 
-    items = list(batch.get("items", []))
-    events = list(batch.get("events", []))
-    timestamp = _utc_now()
+        items = list(batch.get("items", []))
+        events = list(batch.get("events", []))
+        timestamp = _utc_now()
 
-    for item in items:
-        status = str(item.get("status", "queued")).lower()
-        if status == "running":
-            item.update(
+        for item in items:
+            status = str(item.get("status", "queued")).lower()
+            if status == "running":
+                item.update(
+                    {
+                        "status": "failed",
+                        "completed_at": timestamp,
+                        "error": item.get("error") or "Batch stopped before this ticker completed.",
+                        "summary": item.get("summary") or "Batch stopped before this ticker completed.",
+                    }
+                )
+            elif status == "queued":
+                item.update(
+                    {
+                        "status": "skipped",
+                        "completed_at": timestamp,
+                        "summary": item.get("summary") or "Skipped because the batch was stopped.",
+                    }
+                )
+
+        counts = _batch_counts(items)
+        summary = {
+            "counts": counts,
+            "title": f"{len(items)} ticker batch",
+            "headline": f"{counts.get('completed', 0)} completed, {counts.get('failed', 0)} failed, {counts.get('skipped', 0)} skipped",
+            "completed_at": timestamp,
+        }
+        if not events or events[-1].get("status") != "stopped" or events[-1].get("type") != "batch_status":
+            events.append(
                 {
-                    "status": "failed",
-                    "completed_at": timestamp,
-                    "error": item.get("error") or "Batch stopped before this ticker completed.",
-                    "summary": item.get("summary") or "Batch stopped before this ticker completed.",
+                    "type": "batch_status",
+                    "batch_id": batch_id,
+                    "status": "stopped",
+                    "timestamp": timestamp,
+                    "counts": counts,
                 }
             )
-        elif status == "queued":
-            item.update(
-                {
-                    "status": "skipped",
-                    "completed_at": timestamp,
-                    "summary": item.get("summary") or "Skipped because the batch was stopped.",
-                }
-            )
-
-    counts = _batch_counts(items)
-    summary = {
-        "counts": counts,
-        "title": f"{len(items)} ticker batch",
-        "headline": f"{counts.get('completed', 0)} completed, {counts.get('failed', 0)} failed, {counts.get('skipped', 0)} skipped",
-        "completed_at": timestamp,
-    }
-    if not events or events[-1].get("status") != "stopped" or events[-1].get("type") != "batch_status":
-        events.append(
-            {
-                "type": "batch_status",
-                "batch_id": batch_id,
-                "status": "stopped",
-                "timestamp": timestamp,
-                "counts": counts,
-            }
-        )
-    return store.update_analysis_batch(batch_id, status="stopped", items=items, summary=summary, events=events)
+        return store.update_analysis_batch(batch_id, status="stopped", items=items, summary=summary, events=events)
 
 
 def stopped_batch_needs_reconciliation(batch: Optional[Dict[str, Any]]) -> bool:
@@ -1491,18 +1543,41 @@ def _run_batch_thread(batch_id: str, payload: Dict[str, Any], settings: Dict[str
     if batch is None:
         return
 
-    events = list(batch.get("events", []))
-    events.append({"type": "batch_status", "batch_id": batch_id, "status": "running", "timestamp": _utc_now()})
-    store.update_analysis_batch(batch_id, status="running", events=events)
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            return
+        events = list(batch.get("events", []))
+        events.append({"type": "batch_status", "batch_id": batch_id, "status": "running", "timestamp": _utc_now()})
+        store.update_analysis_batch(batch_id, status="running", events=events)
 
     llm_provider = payload.get("llm_provider") or settings.get("llm_provider", "")
     deep_think_llm = payload.get("deep_think_llm") or settings.get("deep_think_llm", "")
     quick_think_llm = payload.get("quick_think_llm") or settings.get("quick_think_llm", "")
+    symbols = list(payload.get("symbols", []))
+    worker_limit = _batch_worker_limit(payload, settings, len(symbols))
+    active_threads: List[Any] = []
 
-    for symbol in payload.get("symbols", []):
+    for symbol in symbols:
         if _is_cancelled(batch_id):
             break
-        _run_single_item(batch_id, symbol, payload, llm_provider, deep_think_llm, quick_think_llm, store)
+        while len(active_threads) >= worker_limit:
+            active_threads = _reap_finished_threads(active_threads)
+            if len(active_threads) >= worker_limit:
+                _join_thread(active_threads[0], timeout=0.05)
+                active_threads = _reap_finished_threads(active_threads)
+        worker = _thread_cls(
+            target=_run_single_item,
+            args=(batch_id, symbol, payload, llm_provider, deep_think_llm, quick_think_llm, store),
+            daemon=True,
+        )
+        worker.start()
+        active_threads.append(worker)
+
+    while active_threads:
+        active_threads = _reap_finished_threads(active_threads)
+        if active_threads:
+            _join_thread(active_threads[0], timeout=0.05)
 
     batch = store.get_analysis_batch(batch_id)
     if batch is None:
@@ -1533,37 +1608,38 @@ def _run_single_item(
     quick_think_llm: str,
     store,
 ) -> None:
-    batch = store.get_analysis_batch(batch_id)
-    if batch is None:
-        return
-    items = list(batch.get("items", []))
-    events = list(batch.get("events", []))
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            return
+        items = list(batch.get("items", []))
+        events = list(batch.get("events", []))
 
-    item = next((it for it in items if it.get("symbol") == symbol), None)
-    if item is None:
-        return
+        item = next((it for it in items if it.get("symbol") == symbol), None)
+        if item is None:
+            return
 
-    run = runner.create_run(
-        ticker=symbol,
-        analysis_date=payload.get("analysis_date") or date.today().isoformat(),
-        selected_analysts=payload.get("selected_analysts", []),
-        execution_mode=payload.get("execution_mode", "llm_assisted"),
-        llm_provider=llm_provider,
-        deep_think_llm=deep_think_llm,
-        quick_think_llm=quick_think_llm,
-        trading_style=payload.get("trading_style", "swing"),
-        intraday_interval=payload.get("intraday_interval"),
-        trade_datetime=payload.get("trade_datetime"),
-        include_extended_hours=payload.get("include_extended_hours"),
-    )
-    item.update({"run_id": run.run_id, "status": "running", "started_at": _utc_now()})
-    events.append({
-        "type": "batch_item", "batch_id": batch_id,
-        "symbol": symbol, "run_id": run.run_id,
-        "status": "running", "phase": "starting",
-        "timestamp": _utc_now(),
-    })
-    store.update_analysis_batch(batch_id, items=items, events=events)
+        run = runner.create_run(
+            ticker=symbol,
+            analysis_date=payload.get("analysis_date") or date.today().isoformat(),
+            selected_analysts=payload.get("selected_analysts", []),
+            execution_mode=payload.get("execution_mode", "llm_assisted"),
+            llm_provider=llm_provider,
+            deep_think_llm=deep_think_llm,
+            quick_think_llm=quick_think_llm,
+            trading_style=payload.get("trading_style", "swing"),
+            intraday_interval=payload.get("intraday_interval"),
+            trade_datetime=payload.get("trade_datetime"),
+            include_extended_hours=payload.get("include_extended_hours"),
+        )
+        item.update({"run_id": run.run_id, "status": "running", "started_at": _utc_now()})
+        events.append({
+            "type": "batch_item", "batch_id": batch_id,
+            "symbol": symbol, "run_id": run.run_id,
+            "status": "running", "phase": "starting",
+            "timestamp": _utc_now(),
+        })
+        store.update_analysis_batch(batch_id, items=items, events=events)
 
     try:
         completed = runner.run_sync(
@@ -1578,7 +1654,7 @@ def _run_single_item(
         if completed is None:
             raise RuntimeError("analysis run did not return a result")
         final_order = completed.final_order_intent or {}
-        item.update({
+        item_update = {
             "status": "completed" if completed.status == "completed" else "failed",
             "completed_at": _utc_now(),
             "rating": final_order.get("rating", "HOLD"),
@@ -1586,60 +1662,75 @@ def _run_single_item(
             "report_paths": completed.report_paths,
             "order_intent": final_order,
             "error": "; ".join(completed.errors) if completed.errors else None,
-        })
+        }
     except Exception as exc:
-        item.update({"status": "failed", "completed_at": _utc_now(), "error": str(exc), "rating": "HOLD", "summary": str(exc)})
+        item_update = {"status": "failed", "completed_at": _utc_now(), "error": str(exc), "rating": "HOLD", "summary": str(exc)}
 
-    events.append({
-        "type": "batch_item", "batch_id": batch_id,
-        "symbol": symbol, "run_id": item.get("run_id"),
-        "status": item["status"],
-        "rating": item.get("rating"),
-        "error": item.get("error"),
-        "timestamp": _utc_now(),
-    })
-    counts = _batch_counts(items)
-    if counts.get("running", 0) or counts.get("queued", 0):
-        next_status = "running"
-    else:
-        next_status = _batch_terminal_status(counts)
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            return
+        if _is_cancelled(batch_id) or str(batch.get("status", "")).lower() == "stopped":
+            return
+
+        items = list(batch.get("items", []))
+        events = list(batch.get("events", []))
+        item = next((it for it in items if it.get("symbol") == symbol), None)
+        if item is None:
+            return
+
+        item.update(item_update)
+        events.append({
+            "type": "batch_item", "batch_id": batch_id,
+            "symbol": symbol, "run_id": item.get("run_id"),
+            "status": item["status"],
+            "rating": item.get("rating"),
+            "error": item.get("error"),
+            "timestamp": _utc_now(),
+        })
+        counts = _batch_counts(items)
+        if counts.get("running", 0) or counts.get("queued", 0):
+            next_status = "running"
+        else:
+            next_status = _batch_terminal_status(counts)
+            events.append({
+                "type": "batch_status",
+                "batch_id": batch_id,
+                "status": next_status,
+                "timestamp": _utc_now(),
+                "counts": counts,
+            })
+        store.update_analysis_batch(batch_id, status=next_status, items=items, summary={"counts": counts}, events=events)
+
+
+def rerun_batch_item_analysis(batch_id: str, symbol: str, store, settings: Dict[str, Any]) -> None:
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            return
+        resume_batch(batch_id)
+
+        items = list(batch.get("items", []))
+        events = list(batch.get("events", []))
+        item = next((it for it in items if str(it.get("symbol", "")).upper() == symbol.upper()), None)
+        if item is None:
+            return
+        item.update({
+            "status": "queued",
+            "error": None,
+            "summary": None,
+            "rating": None,
+            "completed_at": None,
+        })
+        counts = _batch_counts(items)
         events.append({
             "type": "batch_status",
             "batch_id": batch_id,
-            "status": next_status,
+            "status": "running",
             "timestamp": _utc_now(),
             "counts": counts,
         })
-    store.update_analysis_batch(batch_id, status=next_status, items=items, summary={"counts": counts}, events=events)
-
-
-def retry_batch_item_analysis(batch_id: str, symbol: str, store, settings: Dict[str, Any]) -> None:
-    batch = store.get_analysis_batch(batch_id)
-    if batch is None:
-        return
-    resume_batch(batch_id)
-
-    items = list(batch.get("items", []))
-    events = list(batch.get("events", []))
-    item = next((it for it in items if str(it.get("symbol", "")).upper() == symbol.upper()), None)
-    if item is None:
-        return
-    item.update({
-        "status": "queued",
-        "error": None,
-        "summary": None,
-        "rating": None,
-        "completed_at": None,
-    })
-    counts = _batch_counts(items)
-    events.append({
-        "type": "batch_status",
-        "batch_id": batch_id,
-        "status": "running",
-        "timestamp": _utc_now(),
-        "counts": counts,
-    })
-    store.update_analysis_batch(batch_id, status="running", items=items, summary={"counts": counts}, events=events)
+        store.update_analysis_batch(batch_id, status="running", items=items, summary={"counts": counts}, events=events)
 
     llm_provider = settings.get("llm_provider", "")
     deep_think_llm = settings.get("deep_think_llm", "")
@@ -1655,6 +1746,158 @@ def retry_batch_item_analysis(batch_id: str, symbol: str, store, settings: Dict[
         daemon=True,
     )
     t.start()
+
+
+def retry_batch_item_analysis(batch_id: str, symbol: str, store, settings: Dict[str, Any]) -> None:
+    rerun_batch_item_analysis(batch_id, symbol, store, settings)
+
+
+def resume_batch_item_from_step_analysis(batch_id: str, symbol: str, store, settings: Dict[str, Any]) -> str:
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise ValueError("batch not found")
+
+    item = next((it for it in list(batch.get("items", [])) if str(it.get("symbol", "")).upper() == symbol.upper()), None)
+    if item is None:
+        raise ValueError("batch item not found")
+
+    previous_run_id = item.get("run_id")
+    checkpoint_sections = runner.load_report_sections_from_events(previous_run_id) if previous_run_id else {}
+    resume_phase = runner.infer_resume_phase(checkpoint_sections)
+    if not resume_phase:
+        raise ValueError(
+            "Retry from interrupted step is not supported yet for this ticker because no resumable checkpoint was found. Use rerun full analysis instead."
+        )
+
+    with _get_batch_state_lock(batch_id):
+        batch = store.get_analysis_batch(batch_id)
+        if batch is None:
+            raise ValueError("batch not found")
+        resume_batch(batch_id)
+
+        items = list(batch.get("items", []))
+        events = list(batch.get("events", []))
+        item = next((it for it in items if str(it.get("symbol", "")).upper() == symbol.upper()), None)
+        if item is None:
+            raise ValueError("batch item not found")
+
+        run = runner.create_run(
+            ticker=str(item.get("symbol") or symbol.upper()),
+            analysis_date=batch.get("analysis_date") or date.today().isoformat(),
+            selected_analysts=batch.get("selected_analysts", []),
+            execution_mode=batch.get("execution_mode", "llm_assisted"),
+            llm_provider=batch.get("llm_provider") or settings.get("llm_provider", ""),
+            deep_think_llm=batch.get("deep_think_llm") or settings.get("deep_think_llm", ""),
+            quick_think_llm=batch.get("quick_think_llm") or settings.get("quick_think_llm", ""),
+            trading_style=batch.get("request", {}).get("trading_style", batch.get("trading_style", "swing")),
+            intraday_interval=batch.get("request", {}).get("intraday_interval", batch.get("intraday_interval")),
+            trade_datetime=batch.get("request", {}).get("trade_datetime", batch.get("trade_datetime")),
+            include_extended_hours=batch.get("request", {}).get("include_extended_hours"),
+        )
+        item.update(
+            {
+                "run_id": run.run_id,
+                "status": "running",
+                "error": None,
+                "summary": None,
+                "rating": None,
+                "completed_at": None,
+                "started_at": _utc_now(),
+            }
+        )
+        counts = _batch_counts(items)
+        events.append(
+            {
+                "type": "batch_item",
+                "batch_id": batch_id,
+                "symbol": symbol.upper(),
+                "run_id": run.run_id,
+                "status": "running",
+                "phase": resume_phase.title(),
+                "timestamp": _utc_now(),
+            }
+        )
+        events.append(
+            {
+                "type": "batch_status",
+                "batch_id": batch_id,
+                "status": "running",
+                "timestamp": _utc_now(),
+                "counts": counts,
+            }
+        )
+        store.update_analysis_batch(batch_id, status="running", items=items, summary={"counts": counts}, events=events)
+
+    def _resume_worker() -> None:
+        completed = runner.run_resumed_sync(
+            run.run_id,
+            resume_from=resume_phase,
+            checkpoint_sections=checkpoint_sections,
+            config={
+                "trading_style": run.trading_style,
+                "intraday_interval": run.intraday_interval,
+                "trade_datetime": run.trade_datetime,
+                "include_extended_hours": run.include_extended_hours,
+            },
+        )
+        item_update: Dict[str, Any]
+        if completed is None:
+            item_update = {"status": "failed", "completed_at": _utc_now(), "error": "analysis run did not return a result", "rating": "HOLD", "summary": "analysis run did not return a result"}
+        else:
+            final_order = completed.final_order_intent or {}
+            item_update = {
+                "status": "completed" if completed.status == "completed" else "failed",
+                "completed_at": _utc_now(),
+                "rating": final_order.get("rating", "HOLD"),
+                "summary": completed.report_sections.get("final_trade_decision") or final_order.get("reason") or "",
+                "report_paths": completed.report_paths,
+                "order_intent": final_order,
+                "error": "; ".join(completed.errors) if completed.errors else None,
+            }
+
+        with _get_batch_state_lock(batch_id):
+            next_batch = store.get_analysis_batch(batch_id)
+            if next_batch is None:
+                return
+            if _is_cancelled(batch_id) or str(next_batch.get("status", "")).lower() == "stopped":
+                return
+
+            items = list(next_batch.get("items", []))
+            events = list(next_batch.get("events", []))
+            next_item = next((it for it in items if str(it.get("symbol", "")).upper() == symbol.upper()), None)
+            if next_item is None:
+                return
+
+            next_item.update(item_update)
+            events.append(
+                {
+                    "type": "batch_item",
+                    "batch_id": batch_id,
+                    "symbol": symbol.upper(),
+                    "run_id": next_item.get("run_id"),
+                    "status": next_item["status"],
+                    "rating": next_item.get("rating"),
+                    "error": next_item.get("error"),
+                    "timestamp": _utc_now(),
+                }
+            )
+            counts = _batch_counts(items)
+            next_status = "running" if counts.get("running", 0) or counts.get("queued", 0) else _batch_terminal_status(counts)
+            if next_status != "running":
+                events.append(
+                    {
+                        "type": "batch_status",
+                        "batch_id": batch_id,
+                        "status": next_status,
+                        "timestamp": _utc_now(),
+                        "counts": counts,
+                    }
+                )
+            store.update_analysis_batch(batch_id, status=next_status, items=items, summary={"counts": counts}, events=events)
+
+    t = _thread_cls(target=_resume_worker, daemon=True)
+    t.start()
+    return resume_phase
 
 
 def _compute_atr_from_intraday(bars_15m: pd.DataFrame, period: int = 14) -> float:

@@ -230,6 +230,7 @@ export function BatchScreen() {
 
   const retryTicker = async (symbol: string) => {
     if (!batchId) return;
+    setError(null);
     updateBatchResult(symbol, {
       ticker: symbol,
       run_id: null,
@@ -245,10 +246,53 @@ export function BatchScreen() {
     });
     setBatchStarted(true);
 
-    const resp = await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/retry`), { method: "POST" });
+    const resp = await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/rerun`), { method: "POST" });
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
+      let message = `HTTP ${resp.status}`;
+      try {
+        const data = await resp.json() as { detail?: string };
+        if (data?.detail) {
+          message = data.detail;
+        }
+      } catch {
+        // ignore malformed error payloads
+      }
+      throw new Error(message);
     }
+    setEventStreamRestartKey((value) => value + 1);
+  };
+
+  const resumeTickerStep = async (symbol: string) => {
+    if (!batchId) return;
+    setError(null);
+    const resp = await fetch(apiUrl(`/api/batches/${batchId}/items/${symbol}/resume-step`), { method: "POST" });
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}`;
+      try {
+        const data = await resp.json() as { detail?: string };
+        if (data?.detail) {
+          message = data.detail;
+        }
+      } catch {
+        // ignore malformed error payloads
+      }
+      setError(message);
+      return;
+    }
+    updateBatchResult(symbol, {
+      ticker: symbol,
+      run_id: null,
+      status: "queued",
+      rating: null,
+      error: null,
+    });
+    setBatchStatus("running");
+    setLatestPhase((prev) => {
+      const next = { ...prev };
+      delete next[symbol];
+      return next;
+    });
+    setBatchStarted(true);
     setEventStreamRestartKey((value) => value + 1);
   };
 
@@ -399,6 +443,7 @@ export function BatchScreen() {
         </div>
       ) : (
         <div className={styles.runningArea}>
+          {error && <div className={styles.error}>{error}</div>}
           <div className={styles.cards}>
             {hasPartialFailure && (
               <div className={styles.partialFailure}>
@@ -434,13 +479,24 @@ export function BatchScreen() {
                       <button
                         className={styles.retryBtn}
                         type="button"
-                        aria-label={`Retry ${sym}`}
+                        aria-label={`Rerun full ${sym}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           void retryTicker(sym);
                         }}
                       >
-                        Retry
+                        Rerun full
+                      </button>
+                      <button
+                        className={styles.retryBtn}
+                        type="button"
+                        aria-label={`Resume ${sym} step`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void resumeTickerStep(sym);
+                        }}
+                      >
+                        Resume step
                       </button>
                       <button
                         className={styles.skipBtn}

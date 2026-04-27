@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -1196,6 +1197,75 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(body["summary"]["counts"]["completed"], 1)
         self.assertEqual(body["summary"]["counts"]["failed"], 1)
 
+    def test_batch_runs_multiple_tickers_concurrently_with_cap(self):
+        from tradingagents.web import workflow_service
+        from tradingagents.web.storage import get_workflow_store
+
+        store = get_workflow_store()
+        batch = store.create_analysis_batch(
+            {
+                "symbols": ["AAPL", "MSFT", "TSLA"],
+                "analysis_date": "2026-04-23",
+                "selected_analysts": ["market"],
+                "execution_mode": "llm_assisted",
+            },
+            home_market="US",
+        )
+        items = [{"symbol": symbol, "run_id": None, "status": "queued"} for symbol in ["AAPL", "MSFT", "TSLA"]]
+        store.update_analysis_batch(
+            batch["batch_id"],
+            status="running",
+            items=items,
+            summary={"counts": workflow_service._batch_counts(items)},
+            events=[{"type": "batch_status", "batch_id": batch["batch_id"], "status": "queued", "timestamp": "2026-04-23T10:00:00Z"}],
+        )
+
+        run_counter = {"value": 0}
+        active = {"count": 0, "max": 0}
+        active_lock = threading.Lock()
+        release = threading.Event()
+
+        def fake_create_run(**kwargs):
+            run_counter["value"] += 1
+            return SimpleNamespace(run_id=f"run-{run_counter['value']}")
+
+        def fake_run_sync(run_id, config=None):
+            with active_lock:
+                active["count"] += 1
+                active["max"] = max(active["max"], active["count"])
+                if active["count"] >= 2:
+                    release.set()
+            self.assertTrue(release.wait(1.0))
+            with active_lock:
+                active["count"] -= 1
+            return SimpleNamespace(
+                status="completed",
+                final_order_intent={"rating": "BUY", "reason": f"Completed {run_id}"},
+                report_sections={"final_trade_decision": f"BUY {run_id}"},
+                errors=[],
+                report_paths={"report.md": f"/tmp/{run_id}.md"},
+            )
+
+        with patch.dict(os.environ, {"TRADINGAGENTS_BATCH_MAX_CONCURRENCY": "2"}, clear=False), patch(
+            "tradingagents.web.workflow_service.runner.create_run",
+            side_effect=fake_create_run,
+        ), patch(
+            "tradingagents.web.workflow_service.runner.run_sync",
+            side_effect=fake_run_sync,
+        ), patch("tradingagents.web.workflow_service._thread_cls", new=threading.Thread):
+            workflow_service._run_batch_thread(
+                batch["batch_id"],
+                {"symbols": ["AAPL", "MSFT", "TSLA"], "analysis_date": "2026-04-23", "selected_analysts": ["market"], "execution_mode": "llm_assisted"},
+                {"llm_provider": "openai", "deep_think_llm": "gpt-5.4", "quick_think_llm": "gpt-5.4-mini"},
+            )
+
+        updated = get_workflow_store().get_analysis_batch(batch["batch_id"])
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertGreaterEqual(active["max"], 2)
+        self.assertEqual(updated["status"], "completed")
+        self.assertEqual(updated["summary"]["counts"]["completed"], 3)
+
     def test_stopping_batch_reconciles_item_statuses_and_counts(self):
         from tradingagents.web.storage import get_workflow_store
 
@@ -1302,6 +1372,92 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(updated["summary"]["counts"]["completed"], 1)
         self.assertEqual(updated["summary"]["counts"]["skipped"], 1)
         self.assertEqual(updated["events"][-1]["status"], "completed")
+
+    def test_resume_step_route_returns_clear_unsupported_message(self):
+        from tradingagents.web.storage import get_workflow_store
+
+        store = get_workflow_store()
+        batch = store.create_analysis_batch(
+            {
+                "symbols": ["AAPL"],
+                "analysis_date": "2026-04-23",
+                "selected_analysts": ["market"],
+                "execution_mode": "llm_assisted",
+            },
+            home_market="US",
+        )
+        store.update_analysis_batch(
+            batch["batch_id"],
+            status="error",
+            items=[
+                {"symbol": "AAPL", "run_id": "run-1", "status": "failed", "error": "connection dropped"},
+            ],
+            summary={"counts": {"queued": 0, "running": 0, "completed": 0, "failed": 1, "skipped": 0}},
+            events=[
+                {"type": "agent_status", "batch_id": batch["batch_id"], "symbol": "AAPL", "run_id": "run-1", "status": "running", "phase": "Research", "timestamp": "2026-04-23T10:00:00Z"},
+                {"type": "batch_item", "batch_id": batch["batch_id"], "symbol": "AAPL", "run_id": "run-1", "status": "error", "timestamp": "2026-04-23T10:01:00Z"},
+            ],
+        )
+
+        resp = self.client.post(f"/api/batches/{batch['batch_id']}/items/AAPL/resume-step")
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn("Retry from interrupted step is not supported yet", resp.json()["detail"])
+        self.assertIn("Research", resp.json()["detail"])
+
+    def test_resume_step_route_queues_resumed_run_when_checkpoint_exists(self):
+        from tradingagents.web.storage import get_workflow_store
+
+        store = get_workflow_store()
+        batch = store.create_analysis_batch(
+            {
+                "symbols": ["AAPL"],
+                "analysis_date": "2026-04-23",
+                "selected_analysts": ["market"],
+                "execution_mode": "llm_assisted",
+            },
+            home_market="US",
+        )
+        store.update_analysis_batch(
+            batch["batch_id"],
+            status="error",
+            items=[
+                {"symbol": "AAPL", "run_id": "run-1", "status": "failed", "error": "connection dropped"},
+            ],
+            summary={"counts": {"queued": 0, "running": 0, "completed": 0, "failed": 1, "skipped": 0}},
+            events=[
+                {"type": "agent_status", "batch_id": batch["batch_id"], "symbol": "AAPL", "run_id": "run-1", "status": "running", "phase": "Research", "timestamp": "2026-04-23T10:00:00Z"},
+            ],
+        )
+
+        with patch("tradingagents.web.workflow_service.runner.load_report_sections_from_events", return_value={
+            "market_report": "Recovered market report",
+            "investment_debate_judge_decision": "Recovered research plan",
+        }), patch(
+            "tradingagents.web.workflow_service.runner.create_run",
+            return_value=SimpleNamespace(run_id="run-2", trading_style="swing", intraday_interval=None, trade_datetime=None, include_extended_hours=None),
+        ), patch(
+            "tradingagents.web.workflow_service.runner.run_resumed_sync",
+            return_value=SimpleNamespace(
+                status="completed",
+                final_order_intent={"rating": "BUY", "reason": "Resumed"},
+                report_sections={"final_trade_decision": "BUY AAPL"},
+                errors=[],
+                report_paths={"report.md": "/tmp/report-aapl.md"},
+            ),
+        ), patch("tradingagents.web.workflow_service._thread_cls", new=_FakeSyncThread):
+            resp = self.client.post(f"/api/batches/{batch['batch_id']}/items/AAPL/resume-step")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["resume_phase"], "trader")
+
+        updated = get_workflow_store().get_analysis_batch(batch["batch_id"])
+        self.assertIsNotNone(updated)
+        assert updated is not None
+        self.assertEqual(updated["status"], "completed")
+        by_symbol = {item["symbol"]: item for item in updated["items"]}
+        self.assertEqual(by_symbol["AAPL"]["status"], "completed")
+        self.assertEqual(by_symbol["AAPL"]["rating"], "BUY")
 
     def test_settings_watchlists_presets_and_session_market_persist(self):
         initial_settings = self.client.get("/api/settings")

@@ -24,7 +24,9 @@ from tradingagents.web.workflow_service import (
     finalize_stopped_batch,
     get_market_chart as build_market_chart,
     get_market_overview as build_market_overview,
+    resume_batch_item_from_step_analysis,
     resolve_basket_items,
+    rerun_batch_item_analysis,
     retry_batch_item_analysis,
     run_backtest_for_strategy,
     run_batch_analysis,
@@ -337,6 +339,23 @@ def create_batch(req: BatchRequest) -> Dict[str, Any]:
 _BATCH_TERMINAL_STATUSES = {"completed", "error", "partial_failure", "stopped", "not_found"}
 
 
+def _latest_phase_for_symbol(batch: Dict[str, Any], symbol: str) -> Optional[str]:
+    events = batch.get("events", [])
+    if not isinstance(events, list):
+        return None
+
+    symbol_upper = symbol.upper()
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("symbol", "")).upper() != symbol_upper:
+            continue
+        phase = event.get("phase")
+        if isinstance(phase, str) and phase.strip():
+            return phase
+    return None
+
+
 @router.get("/api/batches/{batch_id}")
 def get_batch(batch_id: str) -> Dict[str, Any]:
     store = get_workflow_store()
@@ -396,6 +415,33 @@ def retry_batch_item(batch_id: str, symbol: str) -> Dict[str, Any]:
     settings = store.get_settings_without_status()
     retry_batch_item_analysis(batch_id, symbol.upper(), store, settings)
     return {"batch_id": batch_id, "symbol": symbol.upper(), "status": "queued"}
+
+
+@router.post("/api/batches/{batch_id}/items/{symbol}/rerun")
+def rerun_batch_item(batch_id: str, symbol: str) -> Dict[str, Any]:
+    store = get_workflow_store()
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    settings = store.get_settings_without_status()
+    rerun_batch_item_analysis(batch_id, symbol.upper(), store, settings)
+    return {"batch_id": batch_id, "symbol": symbol.upper(), "status": "queued"}
+
+
+@router.post("/api/batches/{batch_id}/items/{symbol}/resume-step")
+def resume_batch_item_from_step(batch_id: str, symbol: str) -> Dict[str, Any]:
+    store = get_workflow_store()
+    batch = store.get_analysis_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    settings = store.get_settings_without_status()
+    try:
+        resume_phase = resume_batch_item_from_step_analysis(batch_id, symbol.upper(), store, settings)
+    except ValueError as exc:
+        last_phase = _latest_phase_for_symbol(batch, symbol)
+        phase_text = f" after '{last_phase}'" if last_phase and last_phase not in str(exc) else ""
+        raise HTTPException(status_code=409, detail=f"{exc}{phase_text}")
+    return {"batch_id": batch_id, "symbol": symbol.upper(), "status": "queued", "resume_phase": resume_phase}
 
 
 @router.post("/api/strategies/from-batch")
