@@ -229,13 +229,28 @@ def _market_for_symbol(symbol: str, default_market: str = "US") -> str:
     return default_market
 
 
+def _resolve_screening_market(universe: str, home_market: str) -> str:
+    key = (universe or "").strip().lower()
+    market_code = (universe or "").strip().upper()
+    if market_code in MARKET_DEFINITIONS:
+        return market_code
+    if key in UNIVERSE_ALIASES:
+        market, _ = UNIVERSE_ALIASES[key]
+        return market
+    fallback = home_market.upper()
+    return fallback if fallback in MARKET_DEFINITIONS else "US"
+
+
 def _resolve_screening_universe(universe: str, custom_symbols: List[str], home_market: str) -> Tuple[str, List[str]]:
     if custom_symbols:
         return "CUSTOM", [symbol.strip().upper() for symbol in custom_symbols if symbol.strip()]
     key = (universe or "").strip().lower()
+    market_code = (universe or "").strip().upper()
     if key in UNIVERSE_ALIASES:
         _, symbols = UNIVERSE_ALIASES[key]
         return universe, list(symbols)
+    if market_code in MARKET_DEFINITIONS:
+        return market_code, list(MARKET_DEFINITIONS[market_code]["universe"])
     market = home_market.upper() if home_market.upper() in MARKET_DEFINITIONS else "US"
     return universe or market, list(MARKET_DEFINITIONS[market]["universe"])
 
@@ -1233,8 +1248,30 @@ def get_market_chart(
     return payload
 
 
+def _build_screening_quant_config(entry_mode: str, request: Dict[str, Any]) -> Dict[str, Any]:
+    filters = request.get("filters") or {}
+    condition_params = request.get("condition_params") or {}
+    config: Dict[str, Any] = {"entry_mode": entry_mode}
+    filter_map = {
+        "momentum": "validation_momentum",
+        "squeeze": "validation_squeeze",
+        "sr_proximity": "validation_sr_proximity",
+    }
+    for request_key, config_key in filter_map.items():
+        if request_key in filters:
+            config[config_key] = bool(filters[request_key])
+    if "sr_proximity_pct" in condition_params:
+        try:
+            sr_proximity_pct = float(condition_params["sr_proximity_pct"])
+        except (TypeError, ValueError):
+            sr_proximity_pct = None
+        if sr_proximity_pct is not None and sr_proximity_pct > 0:
+            config["sr_proximity_pct"] = sr_proximity_pct
+    return config
+
+
 def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> Dict[str, Any]:
-    home_market = settings.get("home_market", "US")
+    home_market = _resolve_screening_market(request.get("universe", ""), settings.get("home_market", "US"))
     screening_run = store.create_screening_run(
         request,
         home_market=home_market,
@@ -1263,7 +1300,13 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
             bars_4h = get_intraday_bars(symbol, "4h", start, trade_date)
             from tradingagents.quant.engine import run_quant_engine
 
-            contract = run_quant_engine(symbol, trade_date, bars_15m, bars_4h, {"entry_mode": entry_mode})
+            contract = run_quant_engine(
+                symbol,
+                trade_date,
+                bars_15m,
+                bars_4h,
+                _build_screening_quant_config(entry_mode, request),
+            )
             last_price = float(bars_15m["Close"].iloc[-1]) if not bars_15m.empty else 0.0
             score = float(contract.score) if contract.score != float("-inf") else -999.0
             result = {

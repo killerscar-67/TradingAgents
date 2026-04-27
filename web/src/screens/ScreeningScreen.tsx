@@ -5,6 +5,18 @@ import { apiUrl } from "../apiBase";
 import type { ScreeningResult, BasketData } from "../types";
 import styles from "./ScreeningScreen.module.css";
 
+type ScreeningConditions = {
+  momentum: boolean;
+  squeeze: boolean;
+  sr_proximity: boolean;
+};
+
+const DEFAULT_CONDITIONS: ScreeningConditions = {
+  momentum: true,
+  squeeze: true,
+  sr_proximity: false,
+};
+
 function getResultEntryMode(result: ScreeningResult): string {
   return result.suggested_entry_mode ?? result.entry_mode ?? "auto";
 }
@@ -28,12 +40,11 @@ export function ScreeningScreen() {
   const [maxResults, setMaxResults] = useState(20);
   const [universe, setUniverse] = useState(regime?.home_market ?? "US");
   const [strategyFilter, setStrategyFilter] = useState("all");
-  const [toggles, setToggles] = useState({
-    allowShorts: false,
-    liquidOnly: false,
-    earningsClean: false,
-    technicalConfirmed: false,
-  });
+  const [conditions, setConditions] = useState<ScreeningConditions>(DEFAULT_CONDITIONS);
+  const [srProximityPct, setSrProximityPct] = useState(0.5);
+  const [conditionEditorOpen, setConditionEditorOpen] = useState(false);
+  const [draftConditions, setDraftConditions] = useState<ScreeningConditions>(DEFAULT_CONDITIONS);
+  const [draftSrProximityPct, setDraftSrProximityPct] = useState(0.5);
 
   const displayedResults = useMemo(() => {
     if (strategyFilter === "all") return results;
@@ -42,6 +53,19 @@ export function ScreeningScreen() {
 
   const selectedDisplayedCount = displayedResults.filter((result) => selectedSymbols.has(result.symbol)).length;
   const allDisplayedSelected = displayedResults.length > 0 && selectedDisplayedCount === displayedResults.length;
+  const activeConditionCount = Object.values(conditions).filter(Boolean).length;
+
+  const openConditionEditor = () => {
+    setDraftConditions(conditions);
+    setDraftSrProximityPct(srProximityPct);
+    setConditionEditorOpen(true);
+  };
+
+  const applyConditionEditor = () => {
+    setConditions(draftConditions);
+    setSrProximityPct(draftSrProximityPct);
+    setConditionEditorOpen(false);
+  };
 
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +80,10 @@ export function ScreeningScreen() {
           strategy: strategyFilter === "all" ? "auto" : strategyFilter,
           min_score: minScore,
           top_n: maxResults,
+          filters: conditions,
+          condition_params: {
+            sr_proximity_pct: srProximityPct / 100,
+          },
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -233,43 +261,107 @@ export function ScreeningScreen() {
               </label>
             ))}
           </div>
-          <div className={styles.filterCheckboxes}>
-            <label className={styles.inlineChoice}>
-              <input
-                type="checkbox"
-                checked={toggles.allowShorts}
-                onChange={(e) => setToggles((prev) => ({ ...prev, allowShorts: e.target.checked }))}
-              />
-              Allow shorts
-            </label>
-            <label className={styles.inlineChoice}>
-              <input
-                type="checkbox"
-                checked={toggles.liquidOnly}
-                onChange={(e) => setToggles((prev) => ({ ...prev, liquidOnly: e.target.checked }))}
-              />
-              Liquid only
-            </label>
-            <label className={styles.inlineChoice}>
-              <input
-                type="checkbox"
-                checked={toggles.earningsClean}
-                onChange={(e) => setToggles((prev) => ({ ...prev, earningsClean: e.target.checked }))}
-              />
-              Earnings clean
-            </label>
-            <label className={styles.inlineChoice}>
-              <input
-                type="checkbox"
-                checked={toggles.technicalConfirmed}
-                onChange={(e) => setToggles((prev) => ({ ...prev, technicalConfirmed: e.target.checked }))}
-              />
-              Technical confirmed
-            </label>
+          <div className={styles.conditionSummary}>
+            <span>{activeConditionCount} conditions active</span>
+            <button
+              type="button"
+              className={styles.conditionBtn}
+              onClick={openConditionEditor}
+            >
+              Edit conditions
+            </button>
           </div>
         </div>
         {error && <div className={styles.error}>{error}</div>}
       </form>
+
+      {conditionEditorOpen && (
+        <div className={styles.drawerBackdrop} onClick={() => setConditionEditorOpen(false)}>
+          <aside
+            aria-label="Condition editor"
+            aria-modal="true"
+            className={styles.conditionDrawer}
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+          >
+            <div className={styles.drawerHeader}>
+              <h2>Condition editor</h2>
+              <button
+                aria-label="Close condition editor"
+                className={styles.closeBtn}
+                onClick={() => setConditionEditorOpen(false)}
+                type="button"
+              >
+                x
+              </button>
+            </div>
+            <div className={styles.conditionList}>
+              <label className={styles.conditionItem}>
+                <span>
+                  <strong>Momentum confirmation</strong>
+                  <small>Require MACD histogram to confirm the trade direction.</small>
+                </span>
+                <input
+                  checked={draftConditions.momentum}
+                  onChange={(e) => setDraftConditions((prev) => ({ ...prev, momentum: e.target.checked }))}
+                  type="checkbox"
+                />
+              </label>
+              <label className={styles.conditionItem}>
+                <span>
+                  <strong>Squeeze gate</strong>
+                  <small>Reject entries while Bollinger Bands are inside Keltner Channels.</small>
+                </span>
+                <input
+                  checked={draftConditions.squeeze}
+                  onChange={(e) => setDraftConditions((prev) => ({ ...prev, squeeze: e.target.checked }))}
+                  type="checkbox"
+                />
+              </label>
+              <label className={styles.conditionItem}>
+                <span>
+                  <strong>Support / resistance proximity</strong>
+                  <small>Reject entries too close to recent swing levels.</small>
+                </span>
+                <input
+                  checked={draftConditions.sr_proximity}
+                  onChange={(e) => setDraftConditions((prev) => ({ ...prev, sr_proximity: e.target.checked }))}
+                  type="checkbox"
+                />
+              </label>
+              <div className={styles.drawerField}>
+                <label className={styles.label} htmlFor="sr-proximity-pct">SR proximity (%)</label>
+                <input
+                  className={styles.input}
+                  id="sr-proximity-pct"
+                  max={10}
+                  min={0.1}
+                  onChange={(e) => setDraftSrProximityPct(Number(e.target.value))}
+                  step={0.05}
+                  type="number"
+                  value={draftSrProximityPct}
+                />
+              </div>
+            </div>
+            <div className={styles.drawerActions}>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => setConditionEditorOpen(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className={styles.runBtn}
+                onClick={applyConditionEditor}
+                type="button"
+              >
+                Apply
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {results.length > 0 ? (
         <div className={styles.resultsArea}>

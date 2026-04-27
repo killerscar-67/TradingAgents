@@ -680,6 +680,45 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(basket_body["items"][0]["symbol"], "AAPL")
         self.assertEqual(basket_body["workflow_session_id"], body["workflow_session_id"])
 
+    def test_screening_market_code_uses_requested_market_universe_and_conditions(self):
+        def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
+            self.assertEqual(config["entry_mode"], "mean_reversion")
+            self.assertFalse(config["validation_momentum"])
+            self.assertTrue(config["validation_squeeze"])
+            self.assertTrue(config["validation_sr_proximity"])
+            self.assertEqual(config["sr_proximity_pct"], 0.0125)
+            return self._quant_contract(symbol, 0.91, "buy", f"{symbol} setup")
+
+        with patch("tradingagents.web.workflow_service.get_market_overview", return_value=_screening_regime("HK")) as overview, patch(
+            "tradingagents.web.workflow_service.get_intraday_bars",
+            return_value=_make_intraday_bars(),
+        ), patch("tradingagents.quant.engine.run_quant_engine", side_effect=fake_quant):
+            screening = self.client.post(
+                "/api/screening/runs",
+                json={
+                    "universe": "HK",
+                    "strategy": "mean_reversion",
+                    "trade_date": "2026-04-23",
+                    "top_n": 1,
+                    "min_score": 0.5,
+                    "filters": {
+                        "momentum": False,
+                        "squeeze": True,
+                        "sr_proximity": True,
+                    },
+                    "condition_params": {
+                        "sr_proximity_pct": 0.0125,
+                    },
+                },
+            )
+
+        self.assertEqual(screening.status_code, 200)
+        body = screening.json()
+        self.assertEqual(body["home_market"], "HK")
+        self.assertEqual(body["universe"], "HK")
+        self.assertEqual(body["results"][0]["symbol"], "0700.HK")
+        self.assertEqual(overview.call_args.args[0], "HK")
+
     def test_screening_tolerates_finance_calendar_provider_errors(self):
         def fake_quant(symbol, trade_date, bars_15m, bars_4h, config=None):
             return self._quant_contract(symbol, 0.92, "buy", f"{symbol} breakout")

@@ -69,9 +69,9 @@ class ScreeningRunRequest(BaseModel):
             "momentum": True,
             "squeeze": True,
             "sr_proximity": False,
-            "volume_surge": True,
         }
     )
+    condition_params: Dict[str, float] = Field(default_factory=dict)
     custom_symbols: List[str] = Field(default_factory=list)
     regime: Optional[Dict[str, Any]] = None
 
@@ -285,6 +285,7 @@ def create_screening_run(req: ScreeningRunRequest) -> Dict[str, Any]:
         "run_id": screening_run["run_id"],
         "workflow_session_id": screening_run["workflow_session_id"],
         "home_market": screening_run["home_market"],
+        "universe": screening_run["universe"],
         "regime": screening_run.get("result", {}).get("regime", {}),
         "results": screening_run.get("results", []),
         "request": req.model_dump(),

@@ -89,12 +89,16 @@ describe("ScreeningScreen", () => {
     expect(screen.getByText(/8 min/i)).toBeInTheDocument();
   });
 
-  it("posts selected universe and exposes strategy filters", async () => {
+  it("posts selected universe and opens the condition editor", async () => {
     const mock = stubFetch();
     renderScreen();
     fireEvent.change(screen.getByLabelText(/universe/i), { target: { value: "HK" } });
     fireEvent.click(screen.getByRole("radio", { name: /breakout/i }));
-    fireEvent.click(screen.getByRole("checkbox", { name: /liquid only/i }));
+    fireEvent.click(screen.getByRole("button", { name: /edit conditions/i }));
+    expect(screen.getByRole("dialog", { name: /condition editor/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /momentum confirmation/i }));
+    fireEvent.change(screen.getByLabelText(/sr proximity/i), { target: { value: "1.25" } });
+    fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
     fireEvent.click(screen.getByRole("button", { name: /run screen/i }));
     await waitFor(() =>
       expect(mock).toHaveBeenCalledWith(
@@ -106,6 +110,14 @@ describe("ScreeningScreen", () => {
     );
     const body = JSON.parse(String(mock.mock.calls[0][1]?.body));
     expect(body.strategy).toBe("breakout");
+    expect(body.filters).toEqual({
+      momentum: false,
+      squeeze: true,
+      sr_proximity: false,
+    });
+    expect(body.condition_params).toEqual({
+      sr_proximity_pct: 0.0125,
+    });
     expect(body).not.toHaveProperty("home_market");
   });
 
