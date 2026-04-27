@@ -18,6 +18,16 @@ describe("ReportTabs", () => {
     expect(screen.getByText("Bullish on AAPL.")).toBeInTheDocument();
   });
 
+  it("opens the first tab with content for archived summary-only runs", () => {
+    render(
+      <ReportTabs
+        sections={{ final_trade_decision: "BUY on recovered archive." }}
+        orderIntent={null}
+      />
+    );
+    expect(screen.getByText("BUY on recovered archive.")).toBeInTheDocument();
+  });
+
   it("switches to trader tab on click", () => {
     render(
       <ReportTabs

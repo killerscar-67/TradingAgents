@@ -56,6 +56,8 @@ class QuantToolTests(unittest.TestCase):
         self.assertEqual(contract.score, 0.8)
         self.assertEqual(contract.confidence, 1.0)
         self.assertEqual(mock_intraday.call_count, 2)
+        self.assertEqual(mock_intraday.call_args_list[0].kwargs["session"], "extended")
+        self.assertEqual(mock_intraday.call_args_list[1].kwargs["session"], "extended")
         mock_run_engine.assert_called_once()
         mock_download.assert_not_called()
 

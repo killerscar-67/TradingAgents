@@ -2,7 +2,7 @@
 
 Determines where a given moment sits in the US equity trading day, computes
 minutes-to-close, and walks back to the most recent trading session when
-called outside RTH. All math is done in the configured session timezone
+called outside the extended-hours window. All math is done in the configured session timezone
 (default America/New_York).
 """
 from __future__ import annotations
@@ -94,6 +94,14 @@ def is_rth(dt: datetime) -> bool:
     return RTH_OPEN <= local.time() < RTH_CLOSE
 
 
+def is_extended_session(dt: datetime) -> bool:
+    """True if dt falls inside US premarket/RTH/postmarket hours."""
+    local = to_session_tz(dt)
+    if local.weekday() >= 5:
+        return False
+    return PREMARKET_OPEN <= local.time() <= POSTMARKET_CLOSE
+
+
 def previous_business_day(dt: datetime, max_walk_back_days: int = 5) -> Optional[datetime]:
     """Walk back to the previous business day's RTH close.
 
@@ -137,11 +145,11 @@ def resolve_session_context(
     dt: datetime,
     max_walk_back_days: int = 5,
 ) -> SessionContext:
-    """Build a SessionContext for dt, walking back to the prior session if outside RTH.
+    """Build a SessionContext for dt, walking back only if outside extended hours.
 
     The data_session_date is the date whose bars should be loaded:
-      - Inside RTH: today (in session tz).
-      - Premarket / closed / weekend / postmarket: most recent prior business day.
+      - Inside premarket/RTH/postmarket: today (in session tz).
+      - Closed / weekend: most recent prior business day.
 
     The session_phase reflects where the *requested* dt sits — so the agent
     knows the user asked at 03:00 ET even though we're showing yesterday's data.
@@ -149,7 +157,7 @@ def resolve_session_context(
     local = to_session_tz(dt)
     phase = session_phase(local)
 
-    if is_rth(local):
+    if is_extended_session(local):
         return SessionContext(
             requested_dt=local,
             effective_dt=local,

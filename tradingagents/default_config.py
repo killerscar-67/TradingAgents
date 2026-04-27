@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
     "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
+    "data_cache_enabled": os.getenv("TRADINGAGENTS_DATA_CACHE_ENABLED", "1").lower() not in {"0", "false", "no"},
+    "data_cache_refresh": False,
     # LLM settings
     "llm_provider": os.getenv("TRADINGAGENTS_LLM_PROVIDER", "openai"),
     "deep_think_llm": os.getenv("TRADINGAGENTS_DEEP_THINK_LLM", "gpt-5.4"),
@@ -69,7 +71,7 @@ DEFAULT_CONFIG = {
         "TRADINGAGENTS_INTRADAY_CACHE_DIR",
         os.path.join(_TRADINGAGENTS_HOME, "cache", "intraday"),
     ),
-    "intraday_default_session": os.getenv("TRADINGAGENTS_INTRADAY_SESSION", "regular"),
+    "intraday_default_session": os.getenv("TRADINGAGENTS_INTRADAY_SESSION", "extended"),
     "intraday_refresh_cache": False,
     # Quant engine (Phase 2) — regime classifier
     "adx_period": 14,
@@ -173,7 +175,7 @@ DEFAULT_CONFIG = {
     # IANA timezone for session-phase calculations.
     "session_timezone": "America/New_York",
     # Whether to include premarket/aftermarket bars in intraday fetches.
-    "include_extended_hours": False,
+    "include_extended_hours": True,
     # Strict daytrade analyst set enforcement. When True, daytrade mode rejects
     # analysts that need swing-horizon data (fundamentals/social) unless
     # `allow_mismatched_analysts` is also True.

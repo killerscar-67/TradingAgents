@@ -1554,6 +1554,7 @@ def _run_single_item(
         trading_style=payload.get("trading_style", "swing"),
         intraday_interval=payload.get("intraday_interval"),
         trade_datetime=payload.get("trade_datetime"),
+        include_extended_hours=payload.get("include_extended_hours"),
     )
     item.update({"run_id": run.run_id, "status": "running", "started_at": _utc_now()})
     events.append({
@@ -1571,6 +1572,7 @@ def _run_single_item(
                 "trading_style": payload.get("trading_style", "swing"),
                 "intraday_interval": payload.get("intraday_interval"),
                 "trade_datetime": payload.get("trade_datetime"),
+                "include_extended_hours": payload.get("include_extended_hours"),
             },
         )
         if completed is None:

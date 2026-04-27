@@ -132,6 +132,27 @@ describe("BatchScreen", () => {
     ));
   });
 
+  it("submits daytrade batches with extended hours enabled by default", async () => {
+    const mock = stubFetch();
+    renderScreen();
+    const input = screen.getByRole("textbox", { name: /add ticker/i });
+    fireEvent.change(input, { target: { value: "GOOG" } });
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /daytrade/i }));
+
+    expect(screen.getByRole("checkbox", { name: /extended hours/i })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: /start batch analysis/i }));
+
+    await waitFor(() => expect(mock).toHaveBeenCalledWith(
+      "/api/batches",
+      expect.objectContaining({ method: "POST" })
+    ));
+    const [, init] = mock.mock.calls.find(([url]) => url === "/api/batches") ?? [];
+    const payload = JSON.parse(String(init?.body));
+    expect(payload.trading_style).toBe("daytrade");
+    expect(payload.include_extended_hours).toBe(true);
+  });
+
   it("shows progress cards after batch starts", async () => {
     stubFetch();
     renderScreen();

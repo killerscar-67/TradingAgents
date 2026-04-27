@@ -1,3 +1,9 @@
+import hashlib
+import json
+import os
+import pickle
+import threading
+from pathlib import Path
 from typing import Annotated, Optional
 
 # Import from vendor-specific modules
@@ -29,6 +35,53 @@ from .intraday import get_intraday_bars as _get_intraday_bars_yfinance
 
 # Configuration and routing logic
 from .config import get_config
+
+
+_CACHE_LOCKS = {}
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_key(method: str, vendor: str, args, kwargs) -> str:
+    payload = {
+        "method": method,
+        "vendor": vendor,
+        "args": args,
+        "kwargs": kwargs,
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _cache_path(cache_dir: str, key: str) -> Path:
+    return Path(cache_dir) / "tool_cache" / f"{key}.pkl"
+
+
+def _get_cache_lock(key: str) -> threading.Lock:
+    with _CACHE_LOCKS_GUARD:
+        if key not in _CACHE_LOCKS:
+            _CACHE_LOCKS[key] = threading.Lock()
+        return _CACHE_LOCKS[key]
+
+
+def _load_cached_result(path: Path):
+    try:
+        if not path.exists():
+            return False, None
+        with path.open("rb") as handle:
+            return True, pickle.load(handle)
+    except Exception:
+        return False, None
+
+
+def _save_cached_result(path: Path, value) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with tmp_path.open("wb") as handle:
+            pickle.dump(value, handle)
+        os.replace(tmp_path, path)
+    except Exception:
+        return
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -155,6 +208,7 @@ def get_vendor(category: str, method: str = None) -> str:
 
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
+    config = get_config()
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
@@ -175,6 +229,28 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
+        cache_enabled = bool(config.get("data_cache_enabled", True))
+        cache_dir = config.get("data_cache_dir")
+        refresh_cache = bool(config.get("data_cache_refresh", False))
+
+        if cache_enabled and cache_dir:
+            key = _cache_key(method, vendor, args, kwargs)
+            path = _cache_path(cache_dir, key)
+            lock = _get_cache_lock(key)
+
+            with lock:
+                if not refresh_cache:
+                    cache_hit, cached_value = _load_cached_result(path)
+                    if cache_hit:
+                        return cached_value
+
+                try:
+                    result = impl_func(*args, **kwargs)
+                except AlphaVantageRateLimitError:
+                    continue  # Only rate limits trigger fallback
+
+                _save_cached_result(path, result)
+                return result
 
         try:
             return impl_func(*args, **kwargs)

@@ -21,6 +21,7 @@ export interface AnalysisRun {
   trading_style: "swing" | "daytrade";
   intraday_interval: string | null;
   trade_datetime: string | null;
+  include_extended_hours: boolean | null;
   session_phase: string | null;
   data_session_date: string | null;
   intraday_decisions: IntradayDecision[];

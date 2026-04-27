@@ -36,6 +36,7 @@ export function BatchScreen() {
   const [tradingStyle, setTradingStyle] = useState<TradingStyle>("swing");
   const [intradayInterval, setIntradayInterval] = useState("5m");
   const [tradeDatetime, setTradeDatetime] = useState("");
+  const [includeExtendedHours, setIncludeExtendedHours] = useState(true);
   const [batchStarted, setBatchStarted] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
@@ -176,6 +177,7 @@ export function BatchScreen() {
       if (basketId) body.basket_id = basketId;
       if (tradingStyle === "daytrade") {
         body.intraday_interval = intradayInterval;
+        body.include_extended_hours = includeExtendedHours;
         if (tradeDatetime) body.trade_datetime = tradeDatetime;
       }
       const resp = await fetch(apiUrl("/api/batches"), {
@@ -221,6 +223,7 @@ export function BatchScreen() {
     setInputVal("");
     setTradingStyle("swing");
     setIntradayInterval("5m");
+    setIncludeExtendedHours(true);
     setTradeDatetime("");
     setSymbols(basket?.symbols ?? []);
   };
@@ -346,6 +349,14 @@ export function BatchScreen() {
                   onChange={(e) => setTradeDatetime(e.target.value)}
                 />
               </div>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={includeExtendedHours}
+                  onChange={(e) => setIncludeExtendedHours(e.target.checked)}
+                />
+                Extended hours
+              </label>
             </div>
           )}
 

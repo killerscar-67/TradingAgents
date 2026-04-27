@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 try:
@@ -64,7 +65,7 @@ class CreateAnalysisTests(unittest.TestCase):
     def setUp(self):
         self.client = _make_analysis_test_client()
         self._background = patch("tradingagents.web.runner.run_background")
-        self._background.start()
+        self.background_mock = self._background.start()
         self.addCleanup(self._background.stop)
 
     def test_valid_request_returns_run_id(self):
@@ -130,6 +131,10 @@ class CreateAnalysisTests(unittest.TestCase):
         self.assertEqual(detail["trading_style"], "daytrade")
         self.assertEqual(detail["selected_analysts"], ["intraday_market", "news"])
         self.assertEqual(detail["intraday_interval"], "5m")
+        self.assertTrue(detail["include_extended_hours"])
+
+        _, config = self.background_mock.call_args.args
+        self.assertTrue(config["include_extended_hours"])
 
     def test_daytrade_accepts_explicit_intraday_interval_and_datetime(self):
         resp = self.client.post("/api/analysis", json={
@@ -138,6 +143,7 @@ class CreateAnalysisTests(unittest.TestCase):
             "trading_style": "daytrade",
             "intraday_interval": "15m",
             "trade_datetime": "2026-04-23T10:15:00-04:00",
+            "include_extended_hours": False,
             "selected_analysts": ["intraday_market", "news"],
         })
 
@@ -145,6 +151,7 @@ class CreateAnalysisTests(unittest.TestCase):
         detail = self.client.get(f"/api/analysis/{resp.json()['run_id']}").json()
         self.assertEqual(detail["intraday_interval"], "15m")
         self.assertEqual(detail["trade_datetime"], "2026-04-23T10:15:00-04:00")
+        self.assertFalse(detail["include_extended_hours"])
 
     def test_daytrade_rejects_unsupported_intraday_interval(self):
         resp = self.client.post("/api/analysis", json={
@@ -273,6 +280,49 @@ class GetAnalysisTests(unittest.TestCase):
         self.assertEqual(body["report_sections"]["market_report"], "Archived market report.")
         self.assertEqual(body["trading_style"], "daytrade")
         self.assertEqual(body["intraday_decisions"][0]["setup_name"], "ORB")
+
+    def test_get_archived_batch_run_loads_sections_from_saved_report_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            market_file = Path(tmp) / "1_analysts" / "market.md"
+            portfolio_file = Path(tmp) / "5_portfolio" / "decision.md"
+            market_file.parent.mkdir(parents=True)
+            portfolio_file.parent.mkdir(parents=True)
+            market_file.write_text("Recovered archived market report.")
+            portfolio_file.write_text("Recovered archived portfolio decision.")
+
+            archive = {
+                "analysis_date": "2026-04-22",
+                "selected_analysts": ["market"],
+                "execution_mode": "llm_assisted",
+                "llm_provider": "openai",
+                "deep_think_llm": "gpt-5.4",
+                "quick_think_llm": "gpt-5.4-mini",
+                "created_at": "2026-04-22T10:00:00Z",
+                "updated_at": "2026-04-22T10:05:00Z",
+                "request": {"trading_style": "swing"},
+                "item": {
+                    "symbol": "MSFT",
+                    "status": "completed",
+                    "summary": "Recovered archived portfolio decision.",
+                    "report_paths": {
+                        "1_analysts/market.md": str(market_file),
+                        "5_portfolio/decision.md": str(portfolio_file),
+                    },
+                },
+                "events": [
+                    {"type": "batch_item", "run_id": "archived-batch-run", "status": "completed"},
+                ],
+            }
+            fake_store = SimpleNamespace(find_analysis_run_archive=lambda run_id: archive if run_id == "archived-batch-run" else None)
+
+            with patch("tradingagents.web.routes.analysis.get_workflow_store", return_value=fake_store):
+                resp = self.client.get("/api/analysis/archived-batch-run")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["ticker"], "MSFT")
+        self.assertEqual(body["report_sections"]["market_report"], "Recovered archived market report.")
+        self.assertEqual(body["report_sections"]["final_trade_decision"], "Recovered archived portfolio decision.")
 
 
 @unittest.skipUnless(_FASTAPI_AVAILABLE, "fastapi not installed")

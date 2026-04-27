@@ -290,7 +290,7 @@ class TradingAgentsGraph:
             trade_date: Date string (YYYY-MM-DD) or date object. In daytrade mode,
                 may also be a full ISO 8601 datetime (e.g. "2025-04-24T10:30:00-04:00");
                 session context is resolved automatically and bars walk back to the
-                previous session when called outside RTH.
+                previous session when called outside extended hours.
             quant_contract: Optional pre-scored QuantSignalContract. When provided
                 in quant_strict mode, the live quant fetch is skipped so the
                 returned order intent is derived from the same signal used during

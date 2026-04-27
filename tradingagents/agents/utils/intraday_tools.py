@@ -6,12 +6,19 @@ backend; Alpha Vantage intraday is not wired in v1.
 """
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 from langchain_core.tools import tool
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.session import resolve_session_context
+
+
+def _resolve_prepost(prepost: Optional[bool]) -> bool:
+    if prepost is None:
+        return bool(get_config().get("include_extended_hours", True))
+    return bool(prepost)
 
 
 @tool
@@ -23,7 +30,7 @@ def get_session_context(
 
     Returns the session phase (premarket/morning/midday/power_hour/close/postmarket/closed),
     minutes remaining until 16:00 ET, and the date whose bars should be used
-    (walks back to the prior business day when called outside RTH).
+    (same day during premarket/postmarket; walks back when fully closed).
     """
     from datetime import datetime
     try:
@@ -46,7 +53,7 @@ def get_intraday_stock_data(
     end_date: Annotated[str, "Session date (YYYY-MM-DD) — last day of bars to return"],
     interval: Annotated[str, "Bar interval: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h"] = "5m",
     lookback_days: Annotated[int, "Calendar days of bars to fetch back from end_date"] = 5,
-    prepost: Annotated[bool, "Include premarket/aftermarket bars"] = False,
+    prepost: Annotated[Optional[bool], "Include premarket/aftermarket bars"] = None,
 ) -> str:
     """
     Retrieve intraday OHLCV bars for a ticker.
@@ -61,7 +68,7 @@ def get_intraday_stock_data(
         end_date,
         interval,
         lookback_days,
-        prepost,
+        _resolve_prepost(prepost),
     )
 
 
@@ -76,7 +83,7 @@ def get_intraday_indicators(
     end_date: Annotated[str, "session date (YYYY-MM-DD)"],
     interval: Annotated[str, "bar interval"] = "5m",
     lookback_days: Annotated[int, "calendar days of bars to load"] = 30,
-    prepost: Annotated[bool, "include premarket/aftermarket bars"] = False,
+    prepost: Annotated[Optional[bool], "include premarket/aftermarket bars"] = None,
 ) -> str:
     """
     Compute one intraday technical indicator. Pass one indicator name per call.
@@ -88,7 +95,7 @@ def get_intraday_indicators(
         try:
             results.append(route_to_vendor(
                 "get_intraday_indicators",
-                symbol, ind, end_date, interval, lookback_days, prepost,
+                symbol, ind, end_date, interval, lookback_days, _resolve_prepost(prepost),
             ))
         except ValueError as e:
             results.append(str(e))

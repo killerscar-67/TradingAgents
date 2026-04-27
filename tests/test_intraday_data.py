@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from tradingagents.dataflows import stockstats_utils
-from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.config import get_config, set_config
 from tradingagents.dataflows.interface import (
     TOOLS_CATEGORIES,
     VENDOR_METHODS,
@@ -89,6 +89,62 @@ class VendorRegistrationTests(unittest.TestCase):
         self.assertEqual(get_category_for_method("get_intraday_indicators"), "technical_indicators")
         self.assertIn("yfinance", VENDOR_METHODS["get_intraday_stock_data"])
         self.assertIn("yfinance", VENDOR_METHODS["get_intraday_indicators"])
+
+
+class IntradayToolDefaultsTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = get_config()
+
+    def tearDown(self):
+        set_config(self.original_config)
+
+    @patch("tradingagents.agents.utils.intraday_tools.route_to_vendor")
+    def test_stock_data_tool_defaults_to_extended_hours(self, mock_route):
+        from tradingagents.agents.utils.intraday_tools import get_intraday_stock_data
+
+        get_intraday_stock_data.func("AAPL", "2026-04-23")
+
+        mock_route.assert_called_once_with(
+            "get_intraday_stock_data",
+            "AAPL",
+            "2026-04-23",
+            "5m",
+            5,
+            True,
+        )
+
+    @patch("tradingagents.agents.utils.intraday_tools.route_to_vendor")
+    def test_stock_data_tool_respects_extended_hours_config(self, mock_route):
+        from tradingagents.agents.utils.intraday_tools import get_intraday_stock_data
+
+        set_config({"include_extended_hours": False})
+        get_intraday_stock_data.func("AAPL", "2026-04-23")
+
+        mock_route.assert_called_once_with(
+            "get_intraday_stock_data",
+            "AAPL",
+            "2026-04-23",
+            "5m",
+            5,
+            False,
+        )
+
+    @patch("tradingagents.agents.utils.intraday_tools.route_to_vendor")
+    def test_indicator_tool_defaults_to_extended_hours(self, mock_route):
+        from tradingagents.agents.utils.intraday_tools import get_intraday_indicators
+
+        mock_route.return_value = "indicator"
+        get_intraday_indicators.func("AAPL", "vwap", "2026-04-23")
+
+        mock_route.assert_called_once_with(
+            "get_intraday_indicators",
+            "AAPL",
+            "vwap",
+            "2026-04-23",
+            "5m",
+            30,
+            True,
+        )
 
 
 if __name__ == "__main__":

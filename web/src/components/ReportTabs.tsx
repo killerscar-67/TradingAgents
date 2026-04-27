@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import styles from "./ReportTabs.module.css";
 
@@ -34,13 +34,32 @@ function getContent(sections: Record<string, string>, key: string | string[]): s
   return sections[key] ?? "";
 }
 
+function getInitialTab(sections: Record<string, string>, orderIntent: Record<string, unknown> | null): string {
+  const firstWithContent = TABS.find((tab) => getContent(sections, tab.key));
+  if (firstWithContent) {
+    return firstWithContent.id;
+  }
+  return orderIntent ? "order" : "market";
+}
+
 export function ReportTabs({ sections, orderIntent }: Props) {
-  const [active, setActive] = useState("market");
+  const [active, setActive] = useState(() => getInitialTab(sections, orderIntent));
 
   const allTabs: Tab[] = [
     ...TABS,
     ...(orderIntent ? [{ id: "order", label: "Order intent", key: [] as string[] }] : []),
   ];
+
+  useEffect(() => {
+    const activeTab = allTabs.find((tab) => tab.id === active);
+    const activeContent = activeTab ? getContent(sections, activeTab.key) : "";
+    if (!activeContent) {
+      const nextActive = getInitialTab(sections, orderIntent);
+      if (nextActive !== active) {
+        setActive(nextActive);
+      }
+    }
+  }, [active, allTabs, orderIntent, sections]);
 
   return (
     <div className={styles.wrap}>

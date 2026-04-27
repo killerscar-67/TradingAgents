@@ -60,6 +60,7 @@ class AnalysisRun:
     trading_style: str = "swing"
     intraday_interval: Optional[str] = None
     trade_datetime: Optional[str] = None
+    include_extended_hours: Optional[bool] = None
     session_phase: Optional[str] = None
     data_session_date: Optional[str] = None
     intraday_decisions: List[Dict[str, Any]] = field(default_factory=list)

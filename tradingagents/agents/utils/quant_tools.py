@@ -39,6 +39,9 @@ def _try_intraday_quant_engine(
     start_dt = end_dt - timedelta(days=intraday_lookback)
     start = start_dt.strftime("%Y-%m-%d")
     end = curr_date
+    intraday_session = cfg.get("intraday_default_session")
+    if not intraday_session:
+        intraday_session = "extended" if cfg.get("include_extended_hours", True) else "regular"
 
     try:
         bars_15m = get_intraday_bars(
@@ -46,7 +49,7 @@ def _try_intraday_quant_engine(
             "15m",
             start,
             end,
-            session=cfg.get("intraday_default_session", "regular"),
+            session=intraday_session,
             cache_dir=cfg.get("intraday_cache_dir"),
             refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),
         )
@@ -55,7 +58,7 @@ def _try_intraday_quant_engine(
             "4h",
             start,
             end,
-            session=cfg.get("intraday_default_session", "regular"),
+            session=intraday_session,
             cache_dir=cfg.get("intraday_cache_dir"),
             refresh_cache=bool(cfg.get("intraday_refresh_cache", False)),
         )

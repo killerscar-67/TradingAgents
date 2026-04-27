@@ -85,6 +85,9 @@ export function RunDetail({ runId, onBack }: Props) {
         {run?.intraday_interval && (
           <span className={styles.metaChip}>{run.intraday_interval}</span>
         )}
+        {run?.trading_style === "daytrade" && run.include_extended_hours && (
+          <span className={styles.metaChip}>extended hours</span>
+        )}
         {run?.session_phase && (
           <span className={styles.metaChip}>{run.session_phase}</span>
         )}

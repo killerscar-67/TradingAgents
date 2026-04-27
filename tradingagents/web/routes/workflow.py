@@ -117,6 +117,7 @@ class BatchRequest(BaseModel):
     trading_style: str = "swing"
     intraday_interval: Optional[str] = None
     trade_datetime: Optional[str] = None
+    include_extended_hours: Optional[bool] = None
 
     @field_validator("selected_analysts")
     @classmethod
@@ -156,6 +157,10 @@ class BatchRequest(BaseModel):
                 self.intraday_interval = "5m"
             if self.trade_datetime is None:
                 self.trade_datetime = f"{self.analysis_date}T09:30:00-04:00"
+            if self.include_extended_hours is None:
+                self.include_extended_hours = True
+        else:
+            self.include_extended_hours = None
         return self
 
 

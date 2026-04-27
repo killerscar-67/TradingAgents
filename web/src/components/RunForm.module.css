@@ -83,6 +83,12 @@
   gap: 6px;
 }
 
+.daytradeGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .label {
   font-size: 13px;
   font-weight: 500;

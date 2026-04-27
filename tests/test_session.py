@@ -74,6 +74,20 @@ class SessionContextTests(unittest.TestCase):
         self.assertEqual(ctx.session_phase, "closed")  # Requested moment was before premarket
         # data_session_date must reflect data; session_phase reflects the requested dt.
 
+    def test_premarket_uses_same_day_extended_session(self):
+        dt = datetime(2025, 4, 24, 7, 0, tzinfo=ET)
+        ctx = resolve_session_context(dt)
+        self.assertFalse(ctx.walked_back)
+        self.assertEqual(ctx.data_session_date, "2025-04-24")
+        self.assertEqual(ctx.session_phase, "premarket")
+
+    def test_postmarket_uses_same_day_extended_session(self):
+        dt = datetime(2025, 4, 24, 18, 0, tzinfo=ET)
+        ctx = resolve_session_context(dt)
+        self.assertFalse(ctx.walked_back)
+        self.assertEqual(ctx.data_session_date, "2025-04-24")
+        self.assertEqual(ctx.session_phase, "postmarket")
+
     def test_weekend_walks_back_to_friday(self):
         dt = datetime(2025, 4, 26, 12, 0, tzinfo=ET)  # Saturday
         ctx = resolve_session_context(dt)

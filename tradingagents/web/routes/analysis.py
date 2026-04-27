@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -36,6 +37,37 @@ def _normalize_archived_run_status(status: Any) -> str:
     return "running"
 
 
+_REPORT_PATH_SECTION_MAP = {
+    "1_analysts/market.md": "market_report",
+    "1_analysts/sentiment.md": "sentiment_report",
+    "1_analysts/news.md": "news_report",
+    "1_analysts/fundamentals.md": "fundamentals_report",
+    "2_research/bull.md": "investment_debate_bull_history",
+    "2_research/bear.md": "investment_debate_bear_history",
+    "2_research/manager.md": "investment_debate_judge_decision",
+    "3_trading/trader.md": "trader_investment_plan",
+    "4_risk/aggressive.md": "risk_debate_aggressive_history",
+    "4_risk/conservative.md": "risk_debate_conservative_history",
+    "4_risk/neutral.md": "risk_debate_neutral_history",
+    "5_portfolio/decision.md": "final_trade_decision",
+}
+
+
+def _load_report_sections_from_paths(report_paths: Dict[str, Any]) -> Dict[str, str]:
+    sections: Dict[str, str] = {}
+    for relative_path, absolute_path in report_paths.items():
+        section_key = _REPORT_PATH_SECTION_MAP.get(str(relative_path))
+        if not section_key:
+            continue
+        try:
+            content = Path(str(absolute_path)).read_text().strip()
+        except OSError:
+            continue
+        if content:
+            sections[section_key] = content
+    return sections
+
+
 def _resolve_run(run_id: str) -> Optional[AnalysisRun]:
     run = runner.get_run(run_id)
     if run is not None:
@@ -47,8 +79,11 @@ def _resolve_run(run_id: str) -> Optional[AnalysisRun]:
 
     item = archived.get("item") or {}
     request = archived.get("request") or {}
+    report_paths = dict(item.get("report_paths") or {})
     summary = str(item.get("summary") or item.get("error") or "")
-    report_sections = {"final_trade_decision": summary} if summary else {}
+    report_sections = _load_report_sections_from_paths(report_paths)
+    if summary and not report_sections.get("final_trade_decision"):
+        report_sections["final_trade_decision"] = summary
     error = item.get("error")
     return AnalysisRun(
         run_id=run_id,
@@ -64,12 +99,13 @@ def _resolve_run(run_id: str) -> Optional[AnalysisRun]:
         started_at=item.get("started_at"),
         completed_at=item.get("completed_at") or archived.get("updated_at"),
         report_sections=report_sections,
-        report_paths=dict(item.get("report_paths") or {}),
+        report_paths=report_paths,
         errors=[str(error)] if error else [],
         final_order_intent=item.get("order_intent") if isinstance(item.get("order_intent"), dict) else None,
         trading_style=str(request.get("trading_style") or "swing"),
         intraday_interval=request.get("intraday_interval"),
         trade_datetime=request.get("trade_datetime"),
+        include_extended_hours=request.get("include_extended_hours"),
     )
 
 
@@ -84,6 +120,7 @@ class CreateAnalysisRequest(BaseModel):
     trading_style: str = "swing"
     intraday_interval: Optional[str] = None
     trade_datetime: Optional[str] = None
+    include_extended_hours: Optional[bool] = None
 
     @field_validator("ticker")
     @classmethod
@@ -150,6 +187,8 @@ class CreateAnalysisRequest(BaseModel):
                 self.intraday_interval = "5m"
             if self.trade_datetime is None:
                 self.trade_datetime = f"{self.analysis_date}T09:30:00-04:00"
+            if self.include_extended_hours is None:
+                self.include_extended_hours = True
         else:
             if self.selected_analysts is None:
                 self.selected_analysts = ["market", "social", "news", "fundamentals"]
@@ -158,6 +197,7 @@ class CreateAnalysisRequest(BaseModel):
                 raise ValueError("swing selected_analysts may only include market, social, news, and fundamentals")
             self.intraday_interval = None
             self.trade_datetime = None
+            self.include_extended_hours = None
         return self
 
 
@@ -179,6 +219,7 @@ def create_analysis(req: CreateAnalysisRequest) -> Dict[str, Any]:
         trading_style=req.trading_style,
         intraday_interval=req.intraday_interval,
         trade_datetime=req.trade_datetime,
+        include_extended_hours=req.include_extended_hours,
     )
     runner.run_background(
         run.run_id,
@@ -186,6 +227,7 @@ def create_analysis(req: CreateAnalysisRequest) -> Dict[str, Any]:
             "trading_style": req.trading_style,
             "intraday_interval": req.intraday_interval,
             "trade_datetime": req.trade_datetime,
+            "include_extended_hours": req.include_extended_hours,
         },
     )
     return {"run_id": run.run_id, "status": run.status}
@@ -214,16 +256,19 @@ async def stream_events(run_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="Run not found")
 
     archived = get_workflow_store().find_analysis_run_archive(run_id)
+    stored_events = load_events_from_disk(run_id)
 
     async def generator():
-        if archived is not None:
+        if stored_events:
+            for event_dict in stored_events:
+                yield f"data: {json.dumps(event_dict)}\n\n"
+            if run.status in ("completed", "error"):
+                return
+
+        if archived is not None and not stored_events:
             for event_dict in archived.get("events", []):
                 yield f"data: {json.dumps(event_dict)}\n\n"
             return
-
-        # Replay stored events first
-        for event_dict in load_events_from_disk(run_id):
-            yield f"data: {json.dumps(event_dict)}\n\n"
 
         # If already terminal, nothing more to stream
         if run.status in ("completed", "error"):

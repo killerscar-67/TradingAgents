@@ -44,6 +44,7 @@ def create_run(
     trading_style: str = "swing",
     intraday_interval: Optional[str] = None,
     trade_datetime: Optional[str] = None,
+    include_extended_hours: Optional[bool] = None,
 ) -> AnalysisRun:
     run_id = str(uuid.uuid4())
     run = AnalysisRun(
@@ -59,6 +60,7 @@ def create_run(
         trading_style=trading_style,
         intraday_interval=intraday_interval,
         trade_datetime=trade_datetime,
+        include_extended_hours=include_extended_hours,
     )
     q: queue.Queue = queue.Queue()
     with _registry_lock:
@@ -146,6 +148,8 @@ def run_sync(
         cfg["intraday_interval"] = run.intraday_interval
     if run.trade_datetime:
         cfg["trade_datetime"] = run.trade_datetime
+    if run.include_extended_hours is not None:
+        cfg["include_extended_hours"] = run.include_extended_hours
 
     if _graph_factory is None:
         # Lazy import so web module can be imported without installing all deps.

@@ -97,6 +97,7 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
   const [analysts, setAnalysts] = useState<string[]>(SWING_ANALYSTS);
   const [intradayInterval, setIntradayInterval] = useState("5m");
   const [tradeDateTime, setTradeDateTime] = useState(`${today}T09:30`);
+  const [includeExtendedHours, setIncludeExtendedHours] = useState(true);
   const [provider, setProvider] = useState("openai");
   const [deepModel, setDeepModel] = useState("gpt-5.4");
   const [quickModel, setQuickModel] = useState("gpt-5.4-mini");
@@ -151,6 +152,7 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
       setAnalysts(DAYTRADE_ANALYSTS);
       setMode("llm_assisted");
       setTradeDateTime(`${date}T09:30`);
+      setIncludeExtendedHours(true);
     } else {
       setAnalysts(SWING_ANALYSTS);
     }
@@ -194,6 +196,7 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
           trading_style: tradingStyle,
           intraday_interval: tradingStyle === "daytrade" ? intradayInterval : undefined,
           trade_datetime: tradingStyle === "daytrade" ? tradeDateTime : undefined,
+          include_extended_hours: tradingStyle === "daytrade" ? includeExtendedHours : undefined,
         }),
       });
       if (!resp.ok) {
@@ -289,35 +292,45 @@ export function RunForm({ onRunCreated, onViewArchives }: Props) {
           </div>
 
           {tradingStyle === "daytrade" && (
-            <div className={styles.row}>
-              <div className={styles.field}>
-                <label className={styles.label} htmlFor="intraday-interval">
-                  Intraday interval
-                </label>
-                <select
-                  id="intraday-interval"
-                  className={styles.input}
-                  value={intradayInterval}
-                  onChange={(e) => setIntradayInterval(e.target.value)}
-                >
-                  {INTRADAY_INTERVALS.map((interval) => (
-                    <option key={interval} value={interval}>{interval}</option>
-                  ))}
-                </select>
+            <div className={styles.daytradeGroup}>
+              <div className={styles.row}>
+                <div className={styles.field}>
+                  <label className={styles.label} htmlFor="intraday-interval">
+                    Intraday interval
+                  </label>
+                  <select
+                    id="intraday-interval"
+                    className={styles.input}
+                    value={intradayInterval}
+                    onChange={(e) => setIntradayInterval(e.target.value)}
+                  >
+                    {INTRADAY_INTERVALS.map((interval) => (
+                      <option key={interval} value={interval}>{interval}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className={styles.field}>
+                  <label className={styles.label} htmlFor="trade-datetime">
+                    Trade datetime
+                  </label>
+                  <input
+                    id="trade-datetime"
+                    className={styles.input}
+                    type="datetime-local"
+                    value={tradeDateTime}
+                    onChange={(e) => setTradeDateTime(e.target.value)}
+                    required
+                  />
+                </div>
               </div>
-              <div className={styles.field}>
-                <label className={styles.label} htmlFor="trade-datetime">
-                  Trade datetime
-                </label>
+              <label className={styles.checkboxLabel}>
                 <input
-                  id="trade-datetime"
-                  className={styles.input}
-                  type="datetime-local"
-                  value={tradeDateTime}
-                  onChange={(e) => setTradeDateTime(e.target.value)}
-                  required
+                  type="checkbox"
+                  checked={includeExtendedHours}
+                  onChange={(e) => setIncludeExtendedHours(e.target.checked)}
                 />
-              </div>
+                Extended hours
+              </label>
             </div>
           )}
 

@@ -121,6 +121,15 @@
   border-color: #3b82f6;
 }
 
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 13px;
+}
+
 .removeBtn:hover {
   color: #f87171;
 }
