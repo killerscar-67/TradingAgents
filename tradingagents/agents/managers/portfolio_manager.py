@@ -1,4 +1,10 @@
-from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction
+from tradingagents.agents.utils.agent_utils import (
+    build_analysis_brief,
+    build_instrument_context,
+    cap_debate_history,
+    get_context_cfg,
+    get_language_instruction,
+)
 
 
 def create_portfolio_manager(llm, memory):
@@ -6,8 +12,9 @@ def create_portfolio_manager(llm, memory):
 
         instrument_context = build_instrument_context(state["company_of_interest"])
 
-        history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
+        history = risk_debate_state["history"]
+
         market_research_report = state["market_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
@@ -15,12 +22,35 @@ def create_portfolio_manager(llm, memory):
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
 
+        ctx = get_context_cfg()
+        mode = ctx["mode"]
+        state_brief = state.get("analysis_brief") or {}
+        if mode == "compact" and not state_brief:
+            state_brief = build_analysis_brief(
+                market_research_report, sentiment_report, news_report, fundamentals_report,
+                max_chars=ctx["brief_max_chars"],
+            )
+
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
+        past_memory_str = "".join(rec["recommendation"] + "\n\n" for rec in past_memories)
 
-        past_memory_str = ""
-        for i, rec in enumerate(past_memories, 1):
-            past_memory_str += rec["recommendation"] + "\n\n"
+        if mode == "compact":
+            analysis_block = (
+                f"\n**Analysis Summary:**\n"
+                f"Market: {state_brief['market']}\n"
+                f"Sentiment: {state_brief['sentiment']}\n"
+                f"News: {state_brief['news']}\n"
+                f"Fundamentals: {state_brief['fundamentals']}\n"
+            )
+            history_section = cap_debate_history(
+                history,
+                max_chars=ctx["debate_max_chars"],
+                preserve_latest_chars=ctx["debate_preserve_chars"],
+            )
+        else:
+            analysis_block = ""
+            history_section = history
 
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
@@ -38,8 +68,7 @@ def create_portfolio_manager(llm, memory):
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
-- Lessons from past decisions: **{past_memory_str}**
-
+- Lessons from past decisions: **{past_memory_str}**{analysis_block}
 **Required Output Structure:**
 1. **Rating**: State one of Buy / Overweight / Hold / Underweight / Sell.
 2. **Executive Summary**: A concise action plan covering entry strategy, position sizing, key risk levels, and time horizon.
@@ -48,7 +77,7 @@ def create_portfolio_manager(llm, memory):
 ---
 
 **Risk Analysts Debate History:**
-{history}
+{history_section}
 
 ---
 
@@ -69,9 +98,12 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
             "count": risk_debate_state["count"],
         }
 
-        return {
+        update = {
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": response.content,
         }
+        if mode == "compact" and state_brief:
+            update["analysis_brief"] = state_brief
+        return update
 
     return portfolio_manager_node

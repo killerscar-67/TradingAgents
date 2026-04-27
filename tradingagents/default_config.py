@@ -18,6 +18,13 @@ DEFAULT_CONFIG = {
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # Compact context mode for debate/risk-discussion phases.
+    # "full"    : pass complete analyst reports verbatim to every debater (legacy).
+    # "compact" : pass 400-char briefs and cap debate history at 2000 chars.
+    "context_mode": os.getenv("TRADINGAGENTS_CONTEXT_MODE", "compact"),
+    "brief_max_chars": 400,
+    "debate_max_chars": 2000,
+    "debate_preserve_chars": 600,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
