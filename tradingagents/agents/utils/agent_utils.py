@@ -1,4 +1,5 @@
-from langchain_core.messages import HumanMessage, RemoveMessage
+from concurrent.futures import ThreadPoolExecutor
+from langchain_core.messages import HumanMessage, RemoveMessage, ToolMessage
 
 # Import tools from separate utility files
 from tradingagents.agents.utils.core_stock_tools import (
@@ -90,6 +91,9 @@ def build_analysis_brief(
     }
 
 
+_HISTORY_MARKER = "\n…[history truncated]…\n"
+
+
 def cap_debate_history(
     history: str,
     max_chars: int = 2000,
@@ -97,17 +101,24 @@ def cap_debate_history(
 ) -> str:
     """Keep the tail of debate history within max_chars.
 
-    Preserves the most-recent preserve_latest_chars verbatim, then fills
+    Preserves the most-recent preserve_latest_chars verbatim, then fills any
     remaining budget with the earliest content (separated by a gap marker).
+    The returned string is always at most ``max_chars`` characters: when the
+    caller passes a preserve budget greater than ``max_chars`` we clamp it so
+    the result still respects the cap.
     """
     if not history or len(history) <= max_chars:
         return history
-    tail = history[-preserve_latest_chars:]
-    head_budget = max_chars - preserve_latest_chars - 40  # room for marker
+    marker_len = len(_HISTORY_MARKER)
+    # Reserve room for the marker; clamp the tail budget so head+marker+tail
+    # cannot exceed max_chars even when preserve_latest_chars is huge.
+    preserve = max(0, min(preserve_latest_chars, max_chars - marker_len))
+    tail = history[-preserve:] if preserve else ""
+    head_budget = max_chars - preserve - marker_len
     if head_budget > 0:
         head = history[:head_budget].rstrip()
-        return head + "\n…[history truncated]…\n" + tail
-    return "…[history truncated]…\n" + tail
+        return head + _HISTORY_MARKER + tail
+    return _HISTORY_MARKER.lstrip() + tail
 
 def create_msg_delete():
     def delete_messages(state):
@@ -126,3 +137,93 @@ def create_msg_delete():
 
 
         
+
+
+# ---------------------------------------------------------------------------
+# Self-contained ReAct loop for analyst nodes.
+# Replaces the previous LangGraph tool-node round-trip pattern, so analysts no
+# longer share the state["messages"] field and can run concurrently from a
+# single parallel-analyst graph node.
+# ---------------------------------------------------------------------------
+
+ANALYST_LOOP_MAX_ITERATIONS = 12
+
+
+def run_analyst_loop(chain, tools, initial_message: str = "Begin your analysis."):
+    """Run an analyst's ReAct tool-calling loop with a private message list.
+
+    Returns the final assistant text. Tool failures are surfaced to the LLM as
+    ToolMessage content so it can recover or proceed.
+    """
+    tools_by_name = {t.name: t for t in tools}
+    messages = [HumanMessage(content=initial_message)]
+
+    for _ in range(ANALYST_LOOP_MAX_ITERATIONS):
+        result = chain.invoke(messages)
+        messages.append(result)
+        tool_calls = getattr(result, "tool_calls", None) or []
+        if not tool_calls:
+            return result.content or ""
+        for tc in tool_calls:
+            tool = tools_by_name.get(tc["name"])
+            if tool is None:
+                messages.append(ToolMessage(
+                    content=f"Tool '{tc['name']}' is not available.",
+                    tool_call_id=tc["id"],
+                ))
+                continue
+            try:
+                output = tool.invoke(tc["args"])
+            except Exception as exc:  # noqa: BLE001 - surface to LLM
+                output = f"Error from {tc['name']}: {exc}"
+            messages.append(ToolMessage(content=str(output), tool_call_id=tc["id"]))
+
+    return getattr(messages[-1], "content", "") or ""
+
+
+def create_parallel_analysts_node(analyst_nodes: dict):
+    """Wrap multiple analyst node functions into one parallel LangGraph node.
+
+    Each underlying analyst runs in its own thread (LLM/tool calls are I/O
+    bound, so the GIL is released). Each writes to a distinct ``*_report``
+    state field, so update merging is conflict-free.
+    """
+    if not analyst_nodes:
+        raise ValueError("create_parallel_analysts_node requires at least one analyst")
+
+    def parallel_node(state):
+        if len(analyst_nodes) == 1:
+            (only_node,) = analyst_nodes.values()
+            return only_node(state)
+
+        merged: dict = {}
+        sources: dict = {}  # state-key -> first analyst that wrote it
+        with ThreadPoolExecutor(max_workers=len(analyst_nodes)) as executor:
+            futures = {
+                name: executor.submit(node, state)
+                for name, node in analyst_nodes.items()
+            }
+            for name, future in futures.items():
+                try:
+                    update = future.result()
+                except Exception as exc:  # noqa: BLE001 - keep partial results
+                    update = {f"{name}_report": f"[{name} analyst failed: {exc}]"}
+                if not update:
+                    continue
+                for key in update:
+                    if key in sources:
+                        # Two analysts writing the same state field would
+                        # silently drop one. setup_graph already rejects
+                        # known collisions (e.g. market + intraday_market);
+                        # surface anything else loudly.
+                        raise RuntimeError(
+                            f"Parallel analyst '{name}' writes state field "
+                            f"'{key}' already produced by analyst "
+                            f"'{sources[key]}'. Either pick non-overlapping "
+                            f"analysts or namespace the output."
+                        )
+                    sources[key] = name
+                merged.update(update)
+        return merged
+
+    return parallel_node

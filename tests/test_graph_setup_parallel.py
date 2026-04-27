@@ -37,7 +37,6 @@ class GraphSetupParallelAnalystsTests(unittest.TestCase):
             patch("tradingagents.graph.setup.create_social_media_analyst", return_value=_dummy_node),
             patch("tradingagents.graph.setup.create_news_analyst", return_value=_dummy_node),
             patch("tradingagents.graph.setup.create_fundamentals_analyst", return_value=_dummy_node),
-            patch("tradingagents.graph.setup.create_msg_delete", return_value=_dummy_node),
             patch("tradingagents.graph.setup.create_bull_researcher", return_value=_dummy_node),
             patch("tradingagents.graph.setup.create_bear_researcher", return_value=_dummy_node),
             patch("tradingagents.graph.setup.create_research_manager", return_value=_dummy_node),
@@ -53,21 +52,22 @@ class GraphSetupParallelAnalystsTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
         graph = self._setup().setup_graph(["market", "social", "news", "fundamentals"])
+        nodes = set(graph.get_graph().nodes.keys())
         edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
 
-        self.assertIn(("__start__", "Market Analyst"), edges)
-        self.assertIn(("__start__", "Social Analyst"), edges)
-        self.assertIn(("__start__", "News Analyst"), edges)
-        self.assertIn(("__start__", "Fundamentals Analyst"), edges)
+        # All analysts run inside one parallel "Analysts" node (a
+        # ThreadPoolExecutor wrapper). The graph has a single fan-out point.
+        self.assertIn("Analysts", nodes)
+        self.assertIn(("__start__", "Analysts"), edges)
+        self.assertIn(("Analysts", "Bull Researcher"), edges)
 
-        self.assertIn(("Market Analyst", "Bull Researcher"), edges)
-        self.assertIn(("Social Analyst", "Bull Researcher"), edges)
-        self.assertIn(("News Analyst", "Bull Researcher"), edges)
-        self.assertIn(("Fundamentals Analyst", "Bull Researcher"), edges)
-
-        self.assertNotIn(("Msg Clear Market", "Social Analyst"), edges)
-        self.assertNotIn(("Msg Clear Social", "News Analyst"), edges)
-        self.assertNotIn(("Msg Clear News", "Fundamentals Analyst"), edges)
+        # Per-analyst LangGraph nodes and their tool/clear scaffolding are gone.
+        for legacy in (
+            "Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst",
+            "tools_market", "tools_social", "tools_news", "tools_fundamentals",
+            "Msg Clear Market", "Msg Clear Social", "Msg Clear News", "Msg Clear Fundamentals",
+        ):
+            self.assertNotIn(legacy, nodes)
 
     def test_parallel_analysts_keep_message_state_isolated(self):
         def market_node(state):

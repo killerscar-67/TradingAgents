@@ -6,20 +6,13 @@ from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.agent_utils import create_parallel_analysts_node
 
 from .conditional_logic import ConditionalLogic
 
 
 class GraphSetup:
     """Handles the setup and configuration of the agent graph."""
-
-    ANALYST_OUTPUT_KEYS = {
-        "market": ("market_report",),
-        "intraday_market": ("market_report", "intraday_decisions"),
-        "social": ("sentiment_report",),
-        "news": ("news_report",),
-        "fundamentals": ("fundamentals_report",),
-    }
 
     def __init__(
         self,
@@ -44,44 +37,6 @@ class GraphSetup:
         self.portfolio_manager_memory = portfolio_manager_memory
         self.conditional_logic = conditional_logic
 
-    def _create_isolated_analyst_runner(self, analyst_type: str, analyst_node, tool_node):
-        """Run one analyst's tool loop in a private message state.
-
-        The outer graph fans analysts out in parallel. The legacy analyst/tool
-        loop uses the shared ``messages`` channel, so each branch must execute
-        in isolation and merge back only its report fields.
-        """
-        analyst_name = f"{analyst_type.capitalize()} Analyst"
-        tools_name = f"tools_{analyst_type}"
-        clear_name = f"Msg Clear {analyst_type.capitalize()}"
-
-        subworkflow = StateGraph(AgentState)
-        subworkflow.add_node(analyst_name, analyst_node)
-        subworkflow.add_node(tools_name, tool_node)
-        subworkflow.add_node(clear_name, create_msg_delete())
-        subworkflow.add_edge(START, analyst_name)
-        subworkflow.add_conditional_edges(
-            analyst_name,
-            getattr(self.conditional_logic, f"should_continue_{analyst_type}"),
-            [tools_name, clear_name],
-        )
-        subworkflow.add_edge(tools_name, analyst_name)
-        subworkflow.add_edge(clear_name, END)
-        analyst_graph = subworkflow.compile()
-        output_keys = self.ANALYST_OUTPUT_KEYS.get(analyst_type, ())
-
-        def run_isolated_analyst(state, config=None):
-            sub_state = dict(state)
-            sub_state["messages"] = list(state.get("messages", []))
-            final_state = analyst_graph.invoke(sub_state, config=config)
-            return {
-                key: final_state[key]
-                for key in output_keys
-                if key in final_state
-            }
-
-        return run_isolated_analyst
-
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
     ):
@@ -98,39 +53,39 @@ class GraphSetup:
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
-        # Create analyst nodes
-        analyst_nodes = {}
-        tool_nodes = {}
+        # Both market and intraday_market write to the `market_report` state
+        # field. With analysts running in parallel inside one node, the merge
+        # would silently drop one of the two reports. Reject the combination
+        # explicitly: callers must pick swing OR daytrade, not both.
+        if "market" in selected_analysts and "intraday_market" in selected_analysts:
+            raise ValueError(
+                "Trading Agents Graph Setup Error: cannot select both 'market' and "
+                "'intraday_market' analysts; they share the market_report state field."
+            )
+
+        # Create analyst nodes. Each analyst now runs a self-contained ReAct
+        # loop (see agent_utils.run_analyst_loop), so the LangGraph tool nodes
+        # and per-analyst Msg Clear nodes are no longer required.
+        analyst_nodes: Dict[str, Any] = {}
 
         if "market" in selected_analysts:
-            analyst_nodes["market"] = create_market_analyst(
-                self.quick_thinking_llm
-            )
-            tool_nodes["market"] = self.tool_nodes["market"]
+            analyst_nodes["market"] = create_market_analyst(self.quick_thinking_llm)
 
         if "intraday_market" in selected_analysts:
             analyst_nodes["intraday_market"] = create_intraday_market_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["intraday_market"] = self.tool_nodes["intraday_market"]
 
         if "social" in selected_analysts:
-            analyst_nodes["social"] = create_social_media_analyst(
-                self.quick_thinking_llm
-            )
-            tool_nodes["social"] = self.tool_nodes["social"]
+            analyst_nodes["social"] = create_social_media_analyst(self.quick_thinking_llm)
 
         if "news" in selected_analysts:
-            analyst_nodes["news"] = create_news_analyst(
-                self.quick_thinking_llm
-            )
-            tool_nodes["news"] = self.tool_nodes["news"]
+            analyst_nodes["news"] = create_news_analyst(self.quick_thinking_llm)
 
         if "fundamentals" in selected_analysts:
             analyst_nodes["fundamentals"] = create_fundamentals_analyst(
                 self.quick_thinking_llm
             )
-            tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(
@@ -155,15 +110,11 @@ class GraphSetup:
         # Create workflow
         workflow = StateGraph(AgentState)
 
-        # Add analyst runners to the graph. Each runner contains that
-        # analyst's private tool loop and returns only report fields.
-        for analyst_type, node in analyst_nodes.items():
-            workflow.add_node(
-                f"{analyst_type.capitalize()} Analyst",
-                self._create_isolated_analyst_runner(
-                    analyst_type, node, tool_nodes[analyst_type]
-                ),
-            )
+        # Single parallel-analyst node: each selected analyst runs concurrently
+        # in its own thread, writing only to its dedicated *_report state
+        # field. With one analyst selected this becomes a no-op pass-through.
+        parallel_analysts = create_parallel_analysts_node(analyst_nodes)
+        workflow.add_node("Analysts", parallel_analysts)
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -176,14 +127,8 @@ class GraphSetup:
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
-        # Run selected analysts in parallel and join before the research debate.
-        analyst_graph_nodes = []
-        for analyst_type in selected_analysts:
-            current_analyst = f"{analyst_type.capitalize()} Analyst"
-            analyst_graph_nodes.append(current_analyst)
-            workflow.add_edge(START, current_analyst)
-
-        workflow.add_edge(analyst_graph_nodes, "Bull Researcher")
+        workflow.add_edge(START, "Analysts")
+        workflow.add_edge("Analysts", "Bull Researcher")
 
         # Add remaining edges
         workflow.add_conditional_edges(

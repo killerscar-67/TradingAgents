@@ -4,6 +4,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_global_news,
     get_language_instruction,
     get_news,
+    run_analyst_loop,
 )
 from tradingagents.dataflows.config import get_config
 
@@ -47,16 +48,9 @@ def create_news_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
 
-        report = ""
+        report = run_analyst_loop(chain, tools)
 
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "news_report": report,
-        }
+        return {"news_report": report}
 
     return news_analyst_node
