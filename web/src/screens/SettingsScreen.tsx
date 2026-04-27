@@ -255,7 +255,7 @@ export function SettingsScreen() {
                 max={1}
                 step={0.05}
                 className={styles.input}
-                value={draft.score_floor ?? settings?.score_floor ?? 0.6}
+                value={draft.score_floor ?? settings?.score_floor ?? 0.3}
                 onChange={(e) => handleChange("score_floor", Number(e.target.value))}
               />
             </div>

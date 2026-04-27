@@ -34,7 +34,7 @@ _DEFAULT_SETTINGS: Dict[str, Any] = {
     },
     "workflow_defaults": {
         "top_n": 20,
-        "min_score": 0.65,
+        "min_score": 0.3,
         "risk_per_trade": 0.01,
         "portfolio_size": 100_000.0,
         "allow_shorts": True,

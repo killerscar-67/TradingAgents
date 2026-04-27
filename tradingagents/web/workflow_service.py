@@ -1340,17 +1340,20 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
     )
     trade_date = request.get("trade_date") or date.today().isoformat()
     settings_defaults = settings.get("workflow_defaults", {})
-    threshold = float(request.get("min_score", settings_defaults.get("min_score", 0.65)))
+    threshold = float(request.get("min_score", settings_defaults.get("min_score", 0.3)))
     top_n = int(request.get("top_n", settings_defaults.get("top_n", 20)))
     overview = get_market_overview(screening_run["home_market"], trade_date, settings)
 
     results: List[Dict[str, Any]] = []
+    error_count = 0
+    below_threshold_count = 0
     start = (datetime.fromisoformat(trade_date) - timedelta(days=45)).date().isoformat()
     for symbol in symbols:
         market = _market_for_symbol(symbol, screening_run["home_market"])
         region_regime = overview["regions"].get(market, {}).get("regime", {})
         strategy = request.get("strategy", "auto")
         entry_mode = region_regime.get("suggested_entry_mode", "auto") if strategy == "auto" else strategy
+        errored = False
         try:
             bars_15m = get_intraday_bars(symbol, "15m", start, trade_date)
             bars_4h = get_intraday_bars(symbol, "4h", start, trade_date)
@@ -1377,6 +1380,7 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
                 "regime": region_regime,
             }
         except Exception as exc:
+            errored = True
             result = {
                 "symbol": symbol,
                 "market": market,
@@ -1389,10 +1393,19 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
                 "regime": region_regime,
                 "error": str(exc),
             }
-        if result["score"] >= threshold:
+        if errored:
+            error_count += 1
+            continue
+        # Use absolute score so strong SELL signals (negative) pass the same threshold as BUYs.
+        if abs(result["score"]) >= threshold:
             results.append(result)
+        else:
+            below_threshold_count += 1
 
-    results.sort(key=lambda item: (item.get("score", -999.0), item.get("confidence") or -1.0), reverse=True)
+    results.sort(
+        key=lambda item: (abs(item.get("score", 0.0)), item.get("confidence") or -1.0),
+        reverse=True,
+    )
     results = results[:top_n]
     completed_at = _utc_now()
     payload = {
@@ -1403,7 +1416,19 @@ def run_screening(request: Dict[str, Any], store, settings: Dict[str, Any]) -> D
         "trade_date": trade_date,
         "regime": overview["regime"],
         "results": results,
-        "summary": f"{len(results)} candidates scored",
+        "summary": (
+            f"{len(results)} candidates scored "
+            f"(evaluated {len(symbols)}, "
+            f"{below_threshold_count} below threshold {threshold:g}, "
+            f"{error_count} errored)"
+        ),
+        "diagnostics": {
+            "evaluated": len(symbols),
+            "passed": len(results),
+            "below_threshold": below_threshold_count,
+            "errors": error_count,
+            "threshold": threshold,
+        },
         "completed_at": completed_at,
     }
     store.update_screening_run(screening_run["run_id"], status="completed", result=payload)
