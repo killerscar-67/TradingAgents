@@ -10,6 +10,7 @@ import styles from "./RunDetail.module.css";
 interface Props {
   runId: string;
   onBack: () => void;
+  onQuickUpdate?: () => void;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -31,7 +32,7 @@ function formatValue(value: unknown): string {
   return String(value);
 }
 
-export function RunDetail({ runId, onBack }: Props) {
+export function RunDetail({ runId, onBack, onQuickUpdate }: Props) {
   const { run, error } = useAnalysisRun(runId);
   const { events } = useSSE(runId);
 
@@ -98,6 +99,11 @@ export function RunDetail({ runId, onBack }: Props) {
         )}
         {run?.errors && run.errors.length > 0 && (
           <span className={styles.headerError}>{run.errors[0]}</span>
+        )}
+        {onQuickUpdate && run?.trading_style === "daytrade" && (
+          <button className={styles.quickUpdateBtn} type="button" onClick={onQuickUpdate}>
+            Quick update
+          </button>
         )}
       </header>
 

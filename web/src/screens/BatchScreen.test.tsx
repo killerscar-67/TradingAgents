@@ -380,6 +380,148 @@ describe("BatchScreen", () => {
     expect(screen.queryByRole("button", { name: /stop all/i })).not.toBeInTheDocument();
   });
 
+  it("shows a quick update action for completed saved daytrade ticker results", async () => {
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/batches/batch-001" && !init?.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "ready",
+            batch: {
+              batch_id: "batch-001",
+              status: "completed",
+              request: { trading_style: "daytrade", intraday_interval: "5m", include_extended_hours: true },
+              symbols: ["AMD"],
+              items: [{ symbol: "AMD", run_id: "run-amd", status: "completed", rating: "BUY" }],
+              events: [{ type: "batch_item", symbol: "AMD", status: "completed", timestamp: 1 }],
+            },
+          }),
+        };
+      }
+      if (url === "/api/batches/batch-001/items/AMD/rerun" && init?.method === "POST") {
+        return { ok: true, json: async () => ({ status: "queued" }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", mock);
+    MockEventSource.reset();
+    vi.stubGlobal("EventSource", MockEventSource);
+
+    function SeedBatchId() {
+      const { setBatchId } = useWorkflow();
+      useEffect(() => {
+        setBatchId("batch-001");
+      }, [setBatchId]);
+      return null;
+    }
+
+    render(
+      <WorkflowProvider>
+        <SeedBatchId />
+        <BatchScreen />
+      </WorkflowProvider>
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /quick update amd/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /quick update amd/i }));
+    await waitFor(() =>
+      expect(mock).toHaveBeenCalledWith(
+        "/api/batches/batch-001/items/AMD/rerun",
+        expect.objectContaining({ method: "POST" })
+      )
+    );
+  });
+
+  it("shows Quick update button inside the ticker detail view for daytrade batches", async () => {
+    const mock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/batches/batch-001" && !init?.method) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: "ready",
+            batch: {
+              batch_id: "batch-001",
+              status: "completed",
+              request: { trading_style: "daytrade", intraday_interval: "5m", include_extended_hours: true },
+              symbols: ["AMD"],
+              items: [{ symbol: "AMD", run_id: "run-amd", status: "completed", rating: "BUY" }],
+              events: [{ type: "batch_item", symbol: "AMD", status: "completed", timestamp: 1 }],
+            },
+          }),
+        };
+      }
+      if (url === "/api/analysis/run-amd") {
+        return {
+          ok: true,
+          json: async () => ({
+            run_id: "run-amd",
+            ticker: "AMD",
+            analysis_date: "2026-04-27",
+            selected_analysts: ["intraday_market", "news"],
+            execution_mode: "llm_assisted",
+            llm_provider: "openai",
+            deep_think_llm: "gpt-5.4",
+            quick_think_llm: "gpt-5.4-mini",
+            created_at: "2026-04-27T14:00:00Z",
+            status: "completed",
+            started_at: null,
+            completed_at: null,
+            report_sections: {},
+            report_paths: {},
+            stats: {},
+            errors: [],
+            final_order_intent: null,
+            trading_style: "daytrade",
+            intraday_interval: "5m",
+            trade_datetime: null,
+            session_phase: null,
+            data_session_date: null,
+            intraday_decisions: [],
+          }),
+        };
+      }
+      if (url === "/api/analysis/run-amd/events") {
+        return { ok: true, json: async () => ({ events: [] }) };
+      }
+      if (url === "/api/batches/batch-001/items/AMD/rerun" && init?.method === "POST") {
+        return { ok: true, json: async () => ({ status: "queued" }) };
+      }
+      return { ok: false, json: async () => ({}) };
+    });
+    vi.stubGlobal("fetch", mock);
+    MockEventSource.reset();
+    vi.stubGlobal("EventSource", MockEventSource);
+
+    function SeedBatchId() {
+      const { setBatchId } = useWorkflow();
+      useEffect(() => {
+        setBatchId("batch-001");
+      }, [setBatchId]);
+      return null;
+    }
+
+    render(
+      <WorkflowProvider>
+        <SeedBatchId />
+        <BatchScreen />
+      </WorkflowProvider>
+    );
+
+    // Open the detail view by clicking the AMD card
+    await waitFor(() => expect(screen.getByText("AMD")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("AMD"));
+
+    // Quick update button should appear in the RunDetail header
+    await waitFor(() => expect(screen.getByRole("button", { name: /quick update/i })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /quick update/i }));
+    await waitFor(() =>
+      expect(mock).toHaveBeenCalledWith(
+        "/api/batches/batch-001/items/AMD/rerun",
+        expect.objectContaining({ method: "POST" })
+      )
+    );
+  });
+
   it("allows clearing the current batch view to start a new batch", async () => {
     stubFetch();
 

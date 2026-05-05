@@ -40,6 +40,7 @@ export function BatchScreen() {
   const [batchStarted, setBatchStarted] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [detailRunId, setDetailRunId] = useState<string | null>(null);
+  const [detailSymbol, setDetailSymbol] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmStopOpen, setConfirmStopOpen] = useState(false);
   const [latestPhase, setLatestPhase] = useState<Record<string, string>>({});
@@ -70,11 +71,21 @@ export function BatchScreen() {
         }
         const batch = data.batch as {
           symbols?: string[];
+          request?: {
+            trading_style?: TradingStyle;
+            intraday_interval?: string;
+            include_extended_hours?: boolean;
+            trade_datetime?: string;
+          };
           items?: Array<{ symbol?: string; run_id?: string | null; status?: string; rating?: string | null; error?: string | null }>;
           events?: Array<{ symbol?: string; phase?: string }>;
           status?: string;
         };
         setSymbols(batch.symbols ?? []);
+        setTradingStyle(batch.request?.trading_style === "daytrade" ? "daytrade" : "swing");
+        setIntradayInterval(batch.request?.intraday_interval ?? "5m");
+        setIncludeExtendedHours(batch.request?.include_extended_hours ?? true);
+        setTradeDatetime(batch.request?.trade_datetime ?? "");
         setLatestPhase(() => {
           const next: Record<string, string> = {};
           for (const event of batch.events ?? []) {
@@ -301,7 +312,13 @@ export function BatchScreen() {
   };
 
   if (detailRunId) {
-    return <RunDetail runId={detailRunId} onBack={() => setDetailRunId(null)} />;
+    return (
+      <RunDetail
+        runId={detailRunId}
+        onBack={() => { setDetailRunId(null); setDetailSymbol(null); }}
+        onQuickUpdate={tradingStyle === "daytrade" && detailSymbol ? () => { void retryTicker(detailSymbol); setDetailRunId(null); setDetailSymbol(null); } : undefined}
+      />
+    );
   }
 
   const resultsList = Object.values(batchResults);
@@ -457,7 +474,12 @@ export function BatchScreen() {
                 <div
                   key={sym}
                   className={`${styles.card} ${item?.run_id ? styles.cardClickable : ""}`}
-                  onClick={() => item?.run_id && setDetailRunId(item.run_id)}
+                  onClick={() => {
+                    if (item?.run_id) {
+                      setDetailRunId(item.run_id);
+                      setDetailSymbol(sym);
+                    }
+                  }}
                 >
                   <div className={styles.cardHeader}>
                     <span className={styles.cardTicker}>{sym}</span>
@@ -473,6 +495,21 @@ export function BatchScreen() {
                   )}
                   {item?.error && (
                     <div className={styles.cardError}>{item.error}</div>
+                  )}
+                  {status === "completed" && tradingStyle === "daytrade" && (
+                    <div className={styles.cardActions}>
+                      <button
+                        className={styles.retryBtn}
+                        type="button"
+                        aria-label={`Quick update ${sym}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void retryTicker(sym);
+                        }}
+                      >
+                        Quick update
+                      </button>
+                    </div>
                   )}
                   {status === "error" && (
                     <div className={styles.cardActions}>

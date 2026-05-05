@@ -69,6 +69,23 @@
   white-space: nowrap;
 }
 
+.quickUpdateBtn {
+  margin-left: auto;
+  background: #172554;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  color: #bfdbfe;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.quickUpdateBtn:hover {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+}
+
 .body {
   flex: 1;
   display: flex;
